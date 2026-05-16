@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Sales Reports — goPOS</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 900px; margin: 2rem auto; padding: 0 1rem; color: #222; }
+  h1 { margin: 0 0 0.25rem; }
+  .subtitle { color: #666; margin: 0 0 1.5rem; font-size: 0.95rem; }
+  .breadcrumb { color: #888; font-size: 0.9rem; margin-bottom: 0.5rem; }
+  .breadcrumb a { color: #47a; text-decoration: none; }
+  .breadcrumb a:hover { text-decoration: underline; }
+
+  table { width: 100%; border-collapse: collapse; background: #fff; border: 1px solid #ddd; border-radius: 8px; overflow: hidden; }
+  th, td { padding: 0.7rem 0.9rem; text-align: left; border-bottom: 1px solid #eee; }
+  th { background: #fafafa; font-size: 0.85rem; color: #555; }
+  td.right, th.right { text-align: right; font-variant-numeric: tabular-nums; }
+
+  tr.today-row { background: #fffbe6; }
+  tr.today-row td:first-child { font-weight: 700; }
+  .today-badge {
+    display: inline-block; background: #b40; color: #fff; padding: 1px 6px;
+    border-radius: 4px; font-size: 0.7rem; font-weight: 600; margin-left: 0.4rem;
+    vertical-align: middle; letter-spacing: 0.5px;
+  }
+
+  tfoot td { background: #f4f4f4; font-weight: 700; border-top: 2px solid #ccc; border-bottom: none; }
+  tfoot td.right { color: #000; }
+
+  .zero { color: #aaa; }
+</style>
+</head>
+<body>
+<div class="breadcrumb"><a href="/products">← Products</a></div>
+<h1>Sales Reports</h1>
+<p class="subtitle">Last 7 days. Reconcile the card column against your physical card terminal at end of day.</p>
+
+<table>
+  <thead>
+    <tr>
+      <th>Day</th>
+      <th class="right">Cash (Rs.)</th>
+      <th class="right">Card (Rs.)</th>
+      <th class="right">Total (Rs.)</th>
+      <th class="right">Transactions</th>
+    </tr>
+  </thead>
+  <tbody>
+    {{range .Days}}
+    <tr{{if .IsToday}} class="today-row"{{end}}>
+      <td>{{.Display}}{{if .IsToday}}<span class="today-badge">TODAY</span>{{end}}</td>
+      <td class="right {{if not .CashRupees}}zero{{end}}">{{.CashRupees}}</td>
+      <td class="right {{if not .CardRupees}}zero{{end}}">{{.CardRupees}}</td>
+      <td class="right {{if not .TotalRupees}}zero{{end}}">{{.TotalRupees}}</td>
+      <td class="right {{if not .TxnCount}}zero{{end}}">{{.TxnCount}}</td>
+    </tr>
+    {{end}}
+  </tbody>
+  <tfoot>
+    <tr>
+      <td>7-day total</td>
+      <td class="right">{{.GrandCash}}</td>
+      <td class="right">{{.GrandCard}}</td>
+      <td class="right">{{.GrandTotal}}</td>
+      <td class="right">{{.GrandCount}}</td>
+    </tr>
+  </tfoot>
+</table>
+</body>
+</html>

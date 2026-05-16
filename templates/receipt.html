@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Receipt #{{.TransactionID}}</title>
+<style>
+  @page { margin: 5mm; }
+  body { font-family: 'Courier New', monospace; max-width: 320px; margin: 0 auto; padding: 1rem; font-size: 12px; color: #000; }
+  h1 { text-align: center; margin: 0 0 0.25rem; font-size: 16px; }
+  .meta { text-align: center; margin-bottom: 0.75rem; padding-bottom: 0.5rem; border-bottom: 1px dashed #000; }
+  .meta .small { font-size: 11px; }
+
+  table.items { width: 100%; border-collapse: collapse; }
+  table.items td { padding: 1px 0; vertical-align: top; }
+  table.items td.right { text-align: right; }
+  .each { font-size: 10px; color: #555; padding-left: 6px; }
+
+  .totals { border-top: 1px dashed #000; margin-top: 0.5rem; padding-top: 0.5rem; }
+  .totals table { width: 100%; border-collapse: collapse; }
+  .totals td { padding: 1px 0; }
+  .totals td.right { text-align: right; }
+  .grand { font-weight: bold; font-size: 14px; border-top: 1px solid #000; padding-top: 4px !important; }
+
+  .footer { text-align: center; margin-top: 0.75rem; padding-top: 0.5rem; border-top: 1px dashed #000; }
+  .no-print { margin-top: 1.5rem; text-align: center; }
+  .no-print button { padding: 0.4rem 1rem; margin: 0 0.25rem; cursor: pointer; }
+  @media print { .no-print { display: none; } body { max-width: none; padding: 0; } }
+</style>
+</head>
+<body onload="window.print()">
+<h1>goPOS</h1>
+<div class="meta">
+  Receipt #{{.TransactionID}}<br>
+  <span class="small">{{.CreatedAt}}</span>
+</div>
+
+<table class="items">
+  {{range .Items}}
+  <tr>
+    <td>{{.Name}}</td>
+    <td class="right">Rs. {{.LineTotalRupees}}</td>
+  </tr>
+  <tr>
+    <td class="each" colspan="2">{{.Quantity}} &times; Rs. {{.UnitPriceRupees}}</td>
+  </tr>
+  {{end}}
+</table>
+
+<div class="totals">
+  <table>
+    <tr><td>Items</td><td class="right">{{.ItemCount}}</td></tr>
+    <tr><td>Payment</td><td class="right">{{.PaymentMethod}}</td></tr>
+    <tr class="grand"><td>TOTAL</td><td class="right">Rs. {{.TotalRupees}}</td></tr>
+  </table>
+</div>
+
+<div class="footer">
+  Thank you, come again!
+</div>
+
+<div class="no-print">
+  <button onclick="window.print()">Print</button>
+  <button onclick="window.close()">Close</button>
+</div>
+</body>
+</html>

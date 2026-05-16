@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Add Product — goPOS</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 600px; margin: 2rem auto; padding: 0 1rem; color: #222; }
+  h1 { margin: 0 0 1.25rem; font-size: 1.5rem; }
+  .breadcrumb { color: #888; font-size: 0.9rem; margin-bottom: 0.5rem; }
+  .breadcrumb a { color: #47a; text-decoration: none; }
+  .breadcrumb a:hover { text-decoration: underline; }
+
+  form { background: #fff; border: 1px solid #ddd; border-radius: 8px; padding: 1.5rem; }
+  .field { margin-bottom: 1.25rem; }
+  .field label { display: block; font-weight: 600; margin-bottom: 0.3rem; }
+  .field .hint { display: block; font-size: 0.85rem; color: #666; margin-bottom: 0.4rem; }
+  .field input {
+    width: 100%; padding: 0.6rem; font-size: 1rem;
+    border: 1px solid #ccc; border-radius: 4px; box-sizing: border-box;
+  }
+  .field input:focus { outline: 2px solid #47a; outline-offset: -1px; border-color: #47a; }
+
+  .error { background: #ffe5e5; color: #b00; padding: 0.75rem; border-radius: 4px; margin-bottom: 1.25rem; }
+
+  .actions { display: flex; gap: 0.5rem; margin-top: 1.5rem; }
+  .actions button.primary {
+    padding: 0.75rem 1.5rem; font-size: 1rem; border: none; border-radius: 4px;
+    cursor: pointer; font-weight: 600; background: #4a7; color: white;
+  }
+  .actions a.cancel {
+    padding: 0.75rem 1.5rem; font-size: 1rem; border: 1px solid #ccc; border-radius: 4px;
+    color: #333; text-decoration: none; background: #fff;
+  }
+  .actions a.cancel:hover { background: #f4f4f4; }
+</style>
+</head>
+<body>
+<div class="breadcrumb">
+  {{if .Return}}<a href="{{.Return}}">← Back</a>{{else}}<a href="/products">← Products</a>{{end}}
+</div>
+<h1>Add Product</h1>
+
+{{if .Error}}<div class="error">{{.Error}}</div>{{end}}
+
+<form method="post" action="/products/new">
+  <input type="hidden" name="return" value="{{.Return}}">
+  <div class="field">
+    <label for="barcode">Barcode</label>
+    <span class="hint">The number printed under the bar code. Must be 8, 12, 13, or 14 digits.</span>
+    <input id="barcode" name="barcode" value="{{.Barcode}}" required autofocus inputmode="numeric">
+  </div>
+  <div class="field">
+    <label for="name">Product name</label>
+    <input id="name" name="name" value="{{.Name}}" required>
+  </div>
+  <div class="field">
+    <label for="price_rupees">Price (Rs.)</label>
+    <span class="hint">Whole rupees, no decimals.</span>
+    <input id="price_rupees" name="price_rupees" type="number" min="0" step="1" value="{{.PriceRupees}}" required>
+  </div>
+  <div class="field">
+    <label for="stock">Initial stock</label>
+    <span class="hint">How many you have in store right now.</span>
+    <input id="stock" name="stock" type="number" min="0" step="1" value="{{.Stock}}" required>
+  </div>
+  <div class="actions">
+    <button type="submit" class="primary">Add Product</button>
+    <a class="cancel" href="{{if .Return}}{{.Return}}{{else}}/products{{end}}">Cancel</a>
+  </div>
+</form>
+</body>
+</html>

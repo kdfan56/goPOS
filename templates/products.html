@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Products — goPOS</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 900px; margin: 2rem auto; padding: 0 1rem; color: #222; }
+  h1 { margin: 0; }
+  .header-row { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem; gap: 1rem; }
+  .add-btn, .nav-btn {
+    padding: 0.55rem 1rem; border-radius: 4px; text-decoration: none;
+    font-weight: 600; white-space: nowrap; font-size: 0.95rem;
+  }
+  .add-btn { background: #4a7; color: white; }
+  .add-btn:hover { background: #386; }
+  .nav-btn { background: #47a; color: white; }
+  .nav-btn:hover { background: #356; }
+  .header-actions { display: flex; gap: 0.5rem; }
+  .banner { padding: 0.75rem 1rem; border-radius: 6px; margin-bottom: 1rem; }
+  .banner a { font-weight: 600; margin-left: 0.5rem; }
+  .low-banner { background: #fff4e0; color: #845; border: 1px solid #f0d090; }
+  .low-banner a { color: #b40; }
+  .filter-banner { background: #e8f0ff; color: #335; border: 1px solid #c0d0f0; }
+  .filter-banner a { color: #335; }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { padding: 0.5rem 0.75rem; text-align: left; border-bottom: 1px solid #ddd; }
+  th { background: #f4f4f4; }
+  td.right, th.right { text-align: right; }
+  .low { color: #b00; font-weight: 600; }
+  .empty { color: #888; font-style: italic; }
+</style>
+</head>
+<body>
+<div class="header-row">
+  <h1>{{if .LowOnly}}Low stock products{{else}}Products{{end}} ({{len .Products}})</h1>
+  <div class="header-actions">
+    <a href="/reports" class="nav-btn">Reports</a>
+    <a href="/products/new" class="add-btn">+ Add Product</a>
+  </div>
+</div>
+
+{{if .LowOnly}}
+<div class="banner filter-banner">
+  Showing only items with stock below {{.Threshold}}.
+  <a href="/products">Show all products</a>
+</div>
+{{else if .LowCount}}
+<div class="banner low-banner">
+  ⚠ {{.LowCount}} product(s) low on stock.
+  <a href="/products?low=1">View low stock</a>
+</div>
+{{end}}
+
+{{if .Products}}
+<table>
+  <thead>
+    <tr>
+      <th>Barcode</th>
+      <th>Name</th>
+      <th class="right">Price (Rs.)</th>
+      <th class="right">Stock</th>
+    </tr>
+  </thead>
+  <tbody>
+    {{range .Products}}
+    <tr>
+      <td>{{.Barcode}}</td>
+      <td>{{.Name}}</td>
+      <td class="right">{{.PriceRupees}}</td>
+      <td class="right {{if lt .Stock $.Threshold}}low{{end}}">{{.Stock}}</td>
+    </tr>
+    {{end}}
+  </tbody>
+</table>
+{{else}}
+<p class="empty">{{if .LowOnly}}No low-stock items right now.{{else}}No products yet.{{end}}</p>
+{{end}}
+</body>
+</html>

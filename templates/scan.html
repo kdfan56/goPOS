@@ -1,0 +1,367 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Scan — goPOS</title>
+<style>
+  * { box-sizing: border-box; }
+  body { font-family: system-ui, sans-serif; margin: 0; padding: 0; color: #222; background: #fafafa; min-height: 100vh; }
+
+  header { background: #222; color: #fff; padding: 0.75rem 1rem; }
+  header h1 { margin: 0; font-size: 1.1rem; font-weight: 600; letter-spacing: 0.5px; }
+
+  .wrap { max-width: 500px; margin: 0 auto; padding: 1rem; }
+
+  .video-frame {
+    position: relative; width: 100%; aspect-ratio: 4/3;
+    background: #000; border-radius: 8px; overflow: hidden;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .video-frame video { width: 100%; height: 100%; object-fit: cover; }
+  .video-frame .placeholder { color: #ccc; text-align: center; padding: 1rem; font-size: 0.9rem; }
+  .scan-line {
+    position: absolute; left: 5%; right: 5%; top: 50%;
+    height: 2px; background: rgba(255, 60, 60, 0.85);
+    box-shadow: 0 0 8px rgba(255, 60, 60, 0.7);
+    pointer-events: none;
+  }
+
+  .status { margin: 0.75rem 0; padding: 0.5rem 0.75rem; border-radius: 6px; font-size: 0.9rem; min-height: 1.5rem; }
+  .status.idle { background: #eef; color: #335; }
+  .status.error { background: #fee; color: #b00; }
+  .status.ok { background: #efe; color: #060; }
+
+  .manual { background: #fff; border: 1px solid #ddd; border-radius: 8px; padding: 0.75rem; margin-top: 1rem; }
+  .manual label { font-size: 0.85rem; color: #555; display: block; margin-bottom: 0.4rem; }
+  .manual-row { display: flex; gap: 0.5rem; }
+  .manual input { flex: 1; padding: 0.6rem; font-size: 1rem; border: 1px solid #ccc; border-radius: 4px; }
+  .manual button { padding: 0.6rem 1rem; font-size: 1rem; background: #47a; color: white; border: none; border-radius: 4px; cursor: pointer; }
+
+  .result {
+    display: none; background: #fff; border-radius: 12px; padding: 1.25rem;
+    box-shadow: 0 2px 12px rgba(0,0,0,0.08); margin-top: 1rem;
+  }
+  .result.show { display: block; }
+  .result .name { font-size: 1.4rem; font-weight: 700; margin-bottom: 0.5rem; }
+  .result .barcode { font-family: 'Courier New', monospace; color: #777; font-size: 0.85rem; margin-bottom: 1rem; }
+  .result .row { display: flex; justify-content: space-between; padding: 0.5rem 0; border-top: 1px solid #eee; font-size: 1.1rem; }
+  .result .price { font-size: 1.6rem; font-weight: 700; color: #060; }
+  .stock.low  { color: #d80; }
+  .stock.out  { color: #b00; font-weight: 700; }
+  .stock.fine { color: #060; }
+  .adjust-controls { display: flex; gap: 0.4rem; align-items: center; }
+  .adjust-controls input {
+    width: 5rem; padding: 0.4rem; font-size: 1rem;
+    border: 1px solid #ccc; border-radius: 4px; text-align: right;
+  }
+  .adjust-controls button {
+    padding: 0.45rem 0.9rem; font-size: 0.95rem;
+    background: #47a; color: white; border: none; border-radius: 4px; cursor: pointer;
+  }
+  .adjust-controls button:disabled { opacity: 0.5; cursor: not-allowed; }
+  .again-btn {
+    width: 100%; padding: 0.9rem; margin-top: 1rem; font-size: 1.1rem;
+    background: #4a7; color: white; border: none; border-radius: 6px; cursor: pointer; font-weight: 600;
+  }
+  .notfound { border-left: 4px solid #b40; }
+  .notfound .name { color: #b40; }
+  .add-product-btn {
+    display: block; width: 100%; padding: 0.9rem; margin-top: 1rem; font-size: 1.1rem;
+    background: #47a; color: white; border: none; border-radius: 6px; cursor: pointer;
+    font-weight: 600; text-align: center; text-decoration: none; box-sizing: border-box;
+  }
+
+  /* Recent additions block — only visible when a product is shown. Receivers use
+     this to check whether the current stock total already includes the pile in
+     front of them, or whether their shipment is genuinely new. */
+  .movements-header {
+    display: flex; justify-content: space-between; align-items: baseline;
+    padding-top: 0.9rem; margin-top: 0.5rem; border-top: 1px solid #eee;
+    font-size: 0.9rem; color: #555;
+  }
+  .movements-header .muted { color: #999; font-size: 0.8rem; }
+  .movements-empty {
+    color: #999; font-style: italic; font-size: 0.85rem; padding: 0.5rem 0;
+  }
+  .movement-row {
+    display: flex; align-items: baseline; gap: 0.5rem;
+    padding: 0.35rem 0; border-top: 1px dashed #f0f0f0; font-size: 0.95rem;
+  }
+  .movement-row:first-child { border-top: none; }
+  .movement-delta { font-weight: 700; color: #060; min-width: 3rem; }
+  .movement-reason { color: #777; font-size: 0.8rem; flex: 1; }
+  .movement-time { color: #888; font-size: 0.85rem; white-space: nowrap; }
+</style>
+</head>
+<body>
+<header><h1>goPOS — Inventory Scan</h1></header>
+
+<div class="wrap">
+  <div class="video-frame">
+    <video id="video" playsinline muted></video>
+    <div id="video-placeholder" class="placeholder">Starting camera...</div>
+    <div class="scan-line"></div>
+  </div>
+
+  <div id="status" class="status idle">Initialising scanner...</div>
+
+  <div id="result" class="result">
+    <div class="name" id="r-name"></div>
+    <div class="barcode" id="r-barcode"></div>
+    <div class="row"><span>Price</span><span class="price">Rs. <span id="r-price"></span></span></div>
+    <div class="row"><span>Stock</span><span id="r-stock-wrap">on hand: 0</span></div>
+    <div class="row">
+      <span>Adjust</span>
+      <span class="adjust-controls">
+        <input id="r-stock-input" type="number" inputmode="numeric" min="0" step="1">
+        <button id="stock-save-btn">Update</button>
+      </span>
+    </div>
+    <div class="movements-header">
+      <span>Recent additions</span>
+      <span class="muted">(last 5)</span>
+    </div>
+    <div id="r-movements"></div>
+    <button class="again-btn" id="again-btn">Scan Another</button>
+  </div>
+
+  <div id="notfound" class="result notfound">
+    <div class="name">Barcode not in system</div>
+    <div class="barcode" id="nf-barcode"></div>
+    <a id="nf-add-btn" class="add-product-btn" href="#">+ Add this product</a>
+    <button class="again-btn" id="nf-again-btn">Scan Another</button>
+  </div>
+
+  <div class="manual">
+    <label for="manual-input">Manual barcode entry (use if camera is blocked):</label>
+    <div class="manual-row">
+      <input id="manual-input" type="text" inputmode="numeric" autocomplete="off" placeholder="Type or paste barcode">
+      <button id="manual-btn">Look up</button>
+    </div>
+  </div>
+</div>
+
+<script src="https://unpkg.com/@zxing/library@0.23.0/umd/index.min.js"></script>
+<script>
+const statusEl = document.getElementById('status');
+const resultEl = document.getElementById('result');
+const videoEl = document.getElementById('video');
+const placeholderEl = document.getElementById('video-placeholder');
+const rName = document.getElementById('r-name');
+const rBarcode = document.getElementById('r-barcode');
+const rPrice = document.getElementById('r-price');
+const rStockWrap = document.getElementById('r-stock-wrap');
+const rStockInput = document.getElementById('r-stock-input');
+const rMovements = document.getElementById('r-movements');
+const stockSaveBtn = document.getElementById('stock-save-btn');
+const againBtn = document.getElementById('again-btn');
+const manualInput = document.getElementById('manual-input');
+const manualBtn = document.getElementById('manual-btn');
+const notFoundEl = document.getElementById('notfound');
+const nfBarcode = document.getElementById('nf-barcode');
+const nfAddBtn = document.getElementById('nf-add-btn');
+const nfAgainBtn = document.getElementById('nf-again-btn');
+
+let scanning = true;
+let controls = null;
+let currentProductId = null;
+
+function setStatus(text, kind) {
+  statusEl.textContent = text;
+  statusEl.className = 'status ' + (kind || 'idle');
+}
+
+function escapeHtml(s) {
+  return String(s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+function showResult(p) {
+  currentProductId = p.id;
+  rName.textContent = p.name;
+  rBarcode.textContent = p.barcode;
+  rPrice.textContent = p.price_rupees;
+  setStockDisplay(p.stock);
+  rStockInput.value = p.stock;
+  stockSaveBtn.disabled = false;
+  renderMovements(p.recent_additions);
+  resultEl.classList.add('show');
+}
+
+// Renders the "Recent additions" list. Receivers compare entries here against
+// the physical pile in front of them to decide whether the current total
+// already includes their shipment or not.
+function renderMovements(additions) {
+  if (!additions || additions.length === 0) {
+    rMovements.innerHTML = '<div class="movements-empty">No additions logged yet.</div>';
+    return;
+  }
+  const html = additions.map(m => {
+    const sign = m.delta > 0 ? '+' : '';
+    return '<div class="movement-row">'
+      + '<span class="movement-delta">' + sign + m.delta + '</span>'
+      + '<span class="movement-reason">' + escapeHtml(m.reason) + '</span>'
+      + '<span class="movement-time">' + escapeHtml(m.created_at) + '</span>'
+      + '</div>';
+  }).join('');
+  rMovements.innerHTML = html;
+}
+
+function setStockDisplay(stock) {
+  let cls = 'fine';
+  let text = 'on hand: ' + stock;
+  if (stock === 0) { cls = 'out'; text = 'OUT OF STOCK'; }
+  else if (stock < 10) cls = 'low';
+  rStockWrap.className = 'stock ' + cls;
+  rStockWrap.textContent = text;
+}
+
+function hideResult() {
+  resultEl.classList.remove('show');
+  currentProductId = null;
+}
+
+function showNotFound(barcode) {
+  hideResult();
+  nfBarcode.textContent = barcode;
+  nfAddBtn.href = '/products/new?barcode=' + encodeURIComponent(barcode) + '&return=/scan';
+  notFoundEl.classList.add('show');
+}
+
+function hideNotFound() {
+  notFoundEl.classList.remove('show');
+}
+
+async function updateStock() {
+  if (currentProductId === null) return;
+  const newStock = parseInt(rStockInput.value, 10);
+  if (isNaN(newStock) || newStock < 0) {
+    setStatus('Stock must be a non-negative whole number', 'error');
+    return;
+  }
+  stockSaveBtn.disabled = true;
+  try {
+    const res = await fetch('/stock/update', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ product_id: currentProductId, stock: newStock }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: 'update failed' }));
+      setStatus(err.error || 'Update failed', 'error');
+      return;
+    }
+    const data = await res.json();
+    setStockDisplay(data.stock);
+    rStockInput.value = data.stock;
+    renderMovements(data.recent_additions);
+    setStatus('Stock updated to ' + data.stock, 'ok');
+  } catch (e) {
+    setStatus('Network error', 'error');
+  } finally {
+    stockSaveBtn.disabled = false;
+  }
+}
+
+async function lookup(barcode) {
+  barcode = String(barcode).trim();
+  if (!barcode) { setStatus('Empty barcode', 'error'); return; }
+  setStatus('Looking up ' + barcode + '...', 'idle');
+  try {
+    const res = await fetch('/pos/scan', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ barcode }),
+    });
+    if (res.status === 404) {
+      setStatus('Barcode not in system — add it?', 'error');
+      showNotFound(barcode);
+      return;
+    }
+    if (!res.ok) {
+      setStatus('Lookup failed (' + res.status + ')', 'error');
+      hideResult();
+      hideNotFound();
+      return;
+    }
+    const p = await res.json();
+    setStatus('Found: ' + p.name, 'ok');
+    hideNotFound();
+    showResult(p);
+  } catch (e) {
+    setStatus('Network error', 'error');
+    hideResult();
+    hideNotFound();
+  }
+}
+
+function needsHttpsHint() {
+  return location.protocol === 'http:'
+      && location.hostname !== 'localhost'
+      && location.hostname !== '127.0.0.1';
+}
+
+async function startCamera() {
+  if (!window.ZXing) {
+    setStatus('Barcode library failed to load (no internet?)', 'error');
+    return;
+  }
+  try {
+    placeholderEl.style.display = 'none';
+    const reader = new ZXing.BrowserMultiFormatReader();
+    const constraints = { video: { facingMode: { ideal: 'environment' } } };
+    setStatus('Requesting camera...', 'idle');
+
+    controls = await reader.decodeFromConstraints(constraints, videoEl, (result, err) => {
+      if (result && scanning) {
+        scanning = false;
+        lookup(result.getText());
+      }
+    });
+    setStatus('Camera ready. Point at barcode.', 'idle');
+  } catch (e) {
+    placeholderEl.textContent = 'Camera unavailable — use manual entry below';
+    let msg = 'Camera error: ' + (e.message || e.name || 'unknown');
+    if (needsHttpsHint()) msg += ' (browsers require HTTPS for camera on non-localhost addresses)';
+    setStatus(msg, 'error');
+  }
+}
+
+function resetForNextScan() {
+  hideResult();
+  hideNotFound();
+  scanning = true;
+  setStatus('Ready. Point at next barcode.', 'idle');
+  manualInput.value = '';
+}
+
+againBtn.addEventListener('click', resetForNextScan);
+nfAgainBtn.addEventListener('click', resetForNextScan);
+
+manualBtn.addEventListener('click', () => {
+  const v = manualInput.value.trim();
+  if (v) lookup(v);
+});
+
+manualInput.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') {
+    e.preventDefault();
+    manualBtn.click();
+  }
+});
+
+stockSaveBtn.addEventListener('click', updateStock);
+
+rStockInput.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') {
+    e.preventDefault();
+    updateStock();
+  }
+});
+
+startCamera();
+</script>
+</body>
+</html>
