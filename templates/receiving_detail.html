@@ -35,9 +35,16 @@
   .totals { padding: 1rem; background: #f4f4f4; border-radius: 6px; display: flex; justify-content: space-between; align-items: center; }
   .totals .grand { font-size: 1.6rem; font-weight: 700; }
 
-  .footer-actions { margin-top: 1.5rem; display: flex; justify-content: flex-end; }
+  .footer-actions { margin-top: 1.5rem; display: flex; justify-content: space-between; gap: 1rem; }
   .delete-btn { padding: 0.55rem 1rem; background: #fff; color: #b00; border: 1px solid #f5b8b8; border-radius: 4px; font-weight: 600; cursor: pointer; }
   .delete-btn:hover { background: #ffe5e5; }
+  .finalize-btn { padding: 0.55rem 1.2rem; background: #4a7; color: #fff; border: none; border-radius: 4px; font-weight: 600; font-size: 1rem; cursor: pointer; }
+  .finalize-btn:hover { background: #386; }
+  .finalize-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+  .banner { padding: 0.75rem 1rem; border-radius: 6px; margin-bottom: 1rem; }
+  .finalized-banner { background: #e5ffe5; color: #060; border: 1px solid #b8e0b8; font-weight: 600; }
+  .error-banner { background: #ffe5e5; color: #b00; border: 1px solid #f5b8b8; }
 </style>
 </head>
 <body>
@@ -45,10 +52,19 @@
 <h1>{{.Label}}</h1>
 <div class="sub">Started {{.StartedAt}} · session #{{.ID}}</div>
 
+{{if eq .Status "finalized"}}
+<div class="banner finalized-banner">&#10003; Finalized {{.FinalizedAt}} — these quantities were added to stock.</div>
+{{end}}
+{{if .Error}}
+<div class="banner error-banner">{{.Error}}</div>
+{{end}}
+
+{{if eq .Status "active"}}
 <div class="scan-row">
   <label for="barcode">Scan:</label>
   <input id="barcode" type="text" autocomplete="off" autofocus placeholder="Scan barcode and press Enter">
 </div>
+{{end}}
 
 <div id="msg" class="msg"></div>
 
@@ -70,15 +86,22 @@
   <div class="grand">Total qty: <span id="total-qty">0</span></div>
 </div>
 
+{{if eq .Status "active"}}
 <div class="footer-actions">
   <form method="POST" action="/receiving/{{.ID}}/delete"
         onsubmit="return confirm('Delete this whole session? Nothing has been added to stock yet — this just discards the scans.');">
     <button type="submit" class="delete-btn">Delete session</button>
   </form>
+  <form method="POST" action="/receiving/{{.ID}}/finalize"
+        onsubmit="return confirm('Finalize this shipment? Every quantity above is added to stock and the session is locked.');">
+    <button type="submit" id="finalize-btn" class="finalize-btn">Finalize &amp; add to stock</button>
+  </form>
 </div>
+{{end}}
 
 <script>
 const sessionId = {{.ID}};
+const readonly = {{if eq .Status "finalized"}}true{{else}}false{{end}};
 let items = {{.ItemsJSON}};
 
 const barcodeInput = document.getElementById('barcode');
@@ -108,26 +131,33 @@ function escapeHtml(s) {
 
 function render() {
   if (items.length === 0) {
-    itemsBody.innerHTML = '<tr><td colspan="5" class="empty">Nothing scanned yet. Scan an item.</td></tr>';
+    const blurb = readonly ? 'No items in this session.' : 'Nothing scanned yet. Scan an item.';
+    itemsBody.innerHTML = '<tr><td colspan="5" class="empty">' + blurb + '</td></tr>';
   } else {
-    itemsBody.innerHTML = items.map(it =>
-      '<tr>'
-      + '<td>' + escapeHtml(it.name) + '</td>'
-      + '<td class="mono">' + escapeHtml(it.barcode) + '</td>'
-      + '<td class="right">' + it.stock + '</td>'
-      + '<td class="qty-cell">'
-        + '<button class="qty-btn" data-op="dec" data-id="' + it.product_id + '">&minus;</button> '
-        + '<span class="qty">' + it.qty + '</span> '
-        + '<button class="qty-btn" data-op="inc" data-id="' + it.product_id + '">+</button>'
-      + '</td>'
-      + '<td><button class="void-btn" data-op="remove" data-id="' + it.product_id + '">&times;</button></td>'
-      + '</tr>'
-    ).join('');
+    itemsBody.innerHTML = items.map(it => {
+      const qtyCell = readonly
+        ? '<td class="qty-cell"><span class="qty">' + it.qty + '</span></td><td></td>'
+        : '<td class="qty-cell">'
+            + '<button class="qty-btn" data-op="dec" data-id="' + it.product_id + '">&minus;</button> '
+            + '<span class="qty">' + it.qty + '</span> '
+            + '<button class="qty-btn" data-op="inc" data-id="' + it.product_id + '">+</button>'
+          + '</td>'
+          + '<td><button class="void-btn" data-op="remove" data-id="' + it.product_id + '">&times;</button></td>';
+      return '<tr>'
+        + '<td>' + escapeHtml(it.name) + '</td>'
+        + '<td class="mono">' + escapeHtml(it.barcode) + '</td>'
+        + '<td class="right">' + it.stock + '</td>'
+        + qtyCell
+        + '</tr>';
+    }).join('');
   }
   let total = 0;
   items.forEach(it => total += it.qty);
   itemCount.textContent = items.length;
   totalQty.textContent = total;
+
+  const fb = document.getElementById('finalize-btn');
+  if (fb) fb.disabled = items.length === 0;
 }
 
 async function scan(barcode) {
@@ -165,25 +195,28 @@ async function adjustItem(productId, op) {
   }
 }
 
-barcodeInput.addEventListener('keydown', (e) => {
-  if (e.key === 'Enter') {
-    e.preventDefault();
-    const v = barcodeInput.value.trim();
-    if (v) scan(v);
-    focusBarcode();
-  }
-});
+// barcodeInput is absent on a finalized (read-only) session.
+if (barcodeInput) {
+  barcodeInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      const v = barcodeInput.value.trim();
+      if (v) scan(v);
+      focusBarcode();
+    }
+  });
+}
 
 // Event delegation: rows are rebuilt by render(), so listen on the table body.
 itemsBody.addEventListener('click', (e) => {
   const btn = e.target.closest('button[data-op]');
   if (!btn) return;
   adjustItem(parseInt(btn.dataset.id, 10), btn.dataset.op);
-  focusBarcode();
+  if (barcodeInput) focusBarcode();
 });
 
 render();
-focusBarcode();
+if (barcodeInput) focusBarcode();
 </script>
 </body>
 </html>

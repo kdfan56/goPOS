@@ -92,6 +92,7 @@ func main() {
 	mux.HandleFunc("POST /receiving/{id}/scan", receivingScanHandler(db))
 	mux.HandleFunc("POST /receiving/{id}/item", receivingItemHandler(db))
 	mux.HandleFunc("POST /receiving/{id}/delete", receivingDeleteHandler(db))
+	mux.HandleFunc("POST /receiving/{id}/finalize", receivingFinalizeHandler(db))
 
 	adminUser := os.Getenv("GOPOS_USER")
 	adminPass := os.Getenv("GOPOS_PASS")
@@ -797,12 +798,14 @@ type ReceivingItem struct {
 }
 
 type receivingDetailData struct {
-	ID        int
-	Label     string
-	StartedAt string
-	Status    string
-	TotalQty  int
-	ItemsJSON template.JS // marshaled []ReceivingItem, rendered into the page's JS
+	ID          int
+	Label       string
+	StartedAt   string
+	FinalizedAt string // "" while active
+	Status      string
+	TotalQty    int
+	Error       string      // surfaced from the ?err= query param
+	ItemsJSON   template.JS // marshaled []ReceivingItem, rendered into the page's JS
 }
 
 // loadReceivingItems returns a session's items (joined to product info), ordered
@@ -854,9 +857,10 @@ func receivingDetailHandler(db *sql.DB, tmpl *template.Template) http.HandlerFun
 
 		var label, status string
 		var startedAt time.Time
+		var finalizedAt sql.NullTime
 		err = db.QueryRow(
-			"SELECT label, status, started_at FROM receiving_sessions WHERE id = ?", id,
-		).Scan(&label, &status, &startedAt)
+			"SELECT label, status, started_at, finalized_at FROM receiving_sessions WHERE id = ?", id,
+		).Scan(&label, &status, &startedAt, &finalizedAt)
 		if errors.Is(err, sql.ErrNoRows) {
 			http.NotFound(w, r)
 			return
@@ -887,6 +891,12 @@ func receivingDetailHandler(db *sql.DB, tmpl *template.Template) http.HandlerFun
 			StartedAt: startedAt.In(storeLocation).Format("2 Jan, 3:04 PM"),
 			TotalQty:  total,
 			ItemsJSON: template.JS(itemsBytes),
+		}
+		if finalizedAt.Valid {
+			data.FinalizedAt = finalizedAt.Time.In(storeLocation).Format("2 Jan, 3:04 PM")
+		}
+		if r.URL.Query().Get("err") == "empty" {
+			data.Error = "Scan at least one item before finalizing."
 		}
 		if err := tmpl.ExecuteTemplate(w, "receiving_detail.html", data); err != nil {
 			log.Printf("render receiving_detail: %v", err)
@@ -1100,6 +1110,117 @@ func receivingDeleteHandler(db *sql.DB) http.HandlerFunc {
 			return
 		}
 		http.Redirect(w, r, "/receiving", http.StatusSeeOther)
+	}
+}
+
+func receivingFinalizeHandler(db *sql.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id, err := strconv.Atoi(r.PathValue("id"))
+		if err != nil {
+			http.NotFound(w, r)
+			return
+		}
+
+		ctx := r.Context()
+		tx, err := db.BeginTx(ctx, nil)
+		if err != nil {
+			log.Printf("begin finalize tx: %v", err)
+			http.Error(w, "failed to finalize", http.StatusInternalServerError)
+			return
+		}
+		defer tx.Rollback()
+
+		// Must still be active. A finalized session is already committed — just show it.
+		var status string
+		err = tx.QueryRowContext(ctx, "SELECT status FROM receiving_sessions WHERE id = ?", id).Scan(&status)
+		if errors.Is(err, sql.ErrNoRows) {
+			http.NotFound(w, r)
+			return
+		}
+		if err != nil {
+			log.Printf("finalize status: %v", err)
+			http.Error(w, "failed to finalize", http.StatusInternalServerError)
+			return
+		}
+		if status != "active" {
+			http.Redirect(w, r, fmt.Sprintf("/receiving/%d", id), http.StatusSeeOther)
+			return
+		}
+
+		// Read all items first — can't run UPDATEs on this tx while the rows cursor
+		// is still open on the same connection.
+		type line struct {
+			productID int
+			qty       int
+		}
+		rows, err := tx.QueryContext(ctx,
+			"SELECT product_id, qty FROM receiving_session_items WHERE session_id = ?", id)
+		if err != nil {
+			log.Printf("finalize load items: %v", err)
+			http.Error(w, "failed to finalize", http.StatusInternalServerError)
+			return
+		}
+		var lines []line
+		for rows.Next() {
+			var l line
+			if err := rows.Scan(&l.productID, &l.qty); err != nil {
+				rows.Close()
+				log.Printf("finalize scan: %v", err)
+				http.Error(w, "failed to finalize", http.StatusInternalServerError)
+				return
+			}
+			lines = append(lines, l)
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			log.Printf("finalize rows: %v", err)
+			http.Error(w, "failed to finalize", http.StatusInternalServerError)
+			return
+		}
+
+		// Block an empty finalize — nothing to commit.
+		if len(lines) == 0 {
+			http.Redirect(w, r, fmt.Sprintf("/receiving/%d?err=empty", id), http.StatusSeeOther)
+			return
+		}
+
+		// Add each qty to stock and log one movement per item. RETURNING gives the
+		// post-update stock atomically, so the audit snapshot is exact even if
+		// another writer touched the same product between sessions.
+		for _, l := range lines {
+			var newStock int
+			err := tx.QueryRowContext(ctx,
+				"UPDATE products SET stock = stock + ? WHERE id = ? RETURNING stock",
+				l.qty, l.productID,
+			).Scan(&newStock)
+			if err != nil {
+				log.Printf("finalize update stock: %v", err)
+				http.Error(w, "failed to finalize", http.StatusInternalServerError)
+				return
+			}
+			if err := recordMovement(ctx, tx, l.productID, l.qty, newStock, "receiving"); err != nil {
+				log.Printf("finalize record movement: %v", err)
+				http.Error(w, "failed to finalize", http.StatusInternalServerError)
+				return
+			}
+		}
+
+		if _, err := tx.ExecContext(ctx,
+			"UPDATE receiving_sessions SET status = 'finalized', finalized_at = CURRENT_TIMESTAMP WHERE id = ?",
+			id,
+		); err != nil {
+			log.Printf("finalize session: %v", err)
+			http.Error(w, "failed to finalize", http.StatusInternalServerError)
+			return
+		}
+
+		if err := tx.Commit(); err != nil {
+			log.Printf("commit finalize: %v", err)
+			http.Error(w, "failed to finalize", http.StatusInternalServerError)
+			return
+		}
+
+		http.Redirect(w, r, fmt.Sprintf("/receiving/%d", id), http.StatusSeeOther)
 	}
 }
 
