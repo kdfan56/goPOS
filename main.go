@@ -86,6 +86,8 @@ func main() {
 	mux.HandleFunc("GET /receipt/{id}", receiptHandler(db, tmpl))
 	mux.HandleFunc("POST /stock/update", stockUpdateHandler(db))
 	mux.HandleFunc("GET /reports", reportsHandler(db, tmpl))
+	mux.HandleFunc("GET /receiving", receivingListHandler(db, tmpl))
+	mux.HandleFunc("POST /receiving/new", createReceivingSessionHandler(db, tmpl))
 
 	adminUser := os.Getenv("GOPOS_USER")
 	adminPass := os.Getenv("GOPOS_PASS")
@@ -691,6 +693,88 @@ func stockUpdateHandler(db *sql.DB) http.HandlerFunc {
 			"stock":            req.Stock,
 			"recent_additions": additions,
 		})
+	}
+}
+
+type ReceivingSession struct {
+	ID        int
+	Label     string
+	StartedAt string // formatted store-local, ready to render
+	ItemCount int    // distinct products scanned in
+	TotalQty  int    // sum of all qtys
+}
+
+type receivingListData struct {
+	Sessions []ReceivingSession
+	Error    string
+}
+
+// renderReceivingList loads the active sessions and renders the list page.
+// Shared by the GET handler and the failed-create path so there's one place
+// that knows how to build this page (errMsg is "" for the normal GET).
+func renderReceivingList(db *sql.DB, tmpl *template.Template, w http.ResponseWriter, errMsg string) {
+	rows, err := db.Query(
+		`SELECT s.id, s.label, s.started_at,
+		        COUNT(i.id) AS item_count,
+		        COALESCE(SUM(i.qty), 0) AS total_qty
+		 FROM receiving_sessions s
+		 LEFT JOIN receiving_session_items i ON i.session_id = s.id
+		 WHERE s.status = 'active'
+		 GROUP BY s.id
+		 ORDER BY s.started_at DESC`,
+	)
+	if err != nil {
+		log.Printf("receiving list query: %v", err)
+		http.Error(w, "failed to load sessions", http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+
+	data := receivingListData{Error: errMsg}
+	for rows.Next() {
+		var s ReceivingSession
+		var startedAt time.Time
+		if err := rows.Scan(&s.ID, &s.Label, &startedAt, &s.ItemCount, &s.TotalQty); err != nil {
+			log.Printf("receiving list scan: %v", err)
+			http.Error(w, "failed to load sessions", http.StatusInternalServerError)
+			return
+		}
+		s.StartedAt = startedAt.In(storeLocation).Format("2 Jan, 3:04 PM")
+		data.Sessions = append(data.Sessions, s)
+	}
+
+	if err := tmpl.ExecuteTemplate(w, "receiving.html", data); err != nil {
+		log.Printf("render receiving: %v", err)
+	}
+}
+
+func receivingListHandler(db *sql.DB, tmpl *template.Template) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		renderReceivingList(db, tmpl, w, "")
+	}
+}
+
+func createReceivingSessionHandler(db *sql.DB, tmpl *template.Template) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseForm(); err != nil {
+			http.Error(w, "bad form", http.StatusBadRequest)
+			return
+		}
+		label := strings.TrimSpace(r.FormValue("label"))
+		if label == "" {
+			renderReceivingList(db, tmpl, w, "Give the shipment a label before starting.")
+			return
+		}
+
+		if _, err := db.Exec("INSERT INTO receiving_sessions (label) VALUES (?)", label); err != nil {
+			log.Printf("create receiving session: %v", err)
+			renderReceivingList(db, tmpl, w, "Failed to start session.")
+			return
+		}
+
+		// PRG: 303 back to the list so a refresh won't re-create the session.
+		// (Becomes a redirect into the session's own page once the detail view exists.)
+		http.Redirect(w, r, "/receiving", http.StatusSeeOther)
 	}
 }
 
