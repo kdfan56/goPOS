@@ -88,6 +88,10 @@ func main() {
 	mux.HandleFunc("GET /reports", reportsHandler(db, tmpl))
 	mux.HandleFunc("GET /receiving", receivingListHandler(db, tmpl))
 	mux.HandleFunc("POST /receiving/new", createReceivingSessionHandler(db, tmpl))
+	mux.HandleFunc("GET /receiving/{id}", receivingDetailHandler(db, tmpl))
+	mux.HandleFunc("POST /receiving/{id}/scan", receivingScanHandler(db))
+	mux.HandleFunc("POST /receiving/{id}/item", receivingItemHandler(db))
+	mux.HandleFunc("POST /receiving/{id}/delete", receivingDeleteHandler(db))
 
 	adminUser := os.Getenv("GOPOS_USER")
 	adminPass := os.Getenv("GOPOS_PASS")
@@ -766,14 +770,335 @@ func createReceivingSessionHandler(db *sql.DB, tmpl *template.Template) http.Han
 			return
 		}
 
-		if _, err := db.Exec("INSERT INTO receiving_sessions (label) VALUES (?)", label); err != nil {
+		res, err := db.Exec("INSERT INTO receiving_sessions (label) VALUES (?)", label)
+		if err != nil {
 			log.Printf("create receiving session: %v", err)
 			renderReceivingList(db, tmpl, w, "Failed to start session.")
 			return
 		}
+		id, err := res.LastInsertId()
+		if err != nil {
+			log.Printf("receiving session last id: %v", err)
+			renderReceivingList(db, tmpl, w, "Failed to start session.")
+			return
+		}
 
-		// PRG: 303 back to the list so a refresh won't re-create the session.
-		// (Becomes a redirect into the session's own page once the detail view exists.)
+		// PRG: 303 straight into the new session's page so scanning can begin.
+		http.Redirect(w, r, fmt.Sprintf("/receiving/%d", id), http.StatusSeeOther)
+	}
+}
+
+type ReceivingItem struct {
+	ProductID int    `json:"product_id"`
+	Barcode   string `json:"barcode"`
+	Name      string `json:"name"`
+	Qty       int    `json:"qty"`
+	Stock     int    `json:"stock"` // current product stock, for receiver context
+}
+
+type receivingDetailData struct {
+	ID        int
+	Label     string
+	StartedAt string
+	Status    string
+	TotalQty  int
+	ItemsJSON template.JS // marshaled []ReceivingItem, rendered into the page's JS
+}
+
+// loadReceivingItems returns a session's items (joined to product info), ordered
+// by name, plus the summed qty. Used by the detail page and the scan/item APIs.
+func loadReceivingItems(db *sql.DB, sessionID int) ([]ReceivingItem, int, error) {
+	rows, err := db.Query(
+		`SELECT p.id, p.barcode, p.name, i.qty, p.stock
+		 FROM receiving_session_items i
+		 JOIN products p ON p.id = i.product_id
+		 WHERE i.session_id = ?
+		 ORDER BY p.name`, sessionID)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+
+	items := []ReceivingItem{} // non-nil so JSON renders as [] not null
+	total := 0
+	for rows.Next() {
+		var it ReceivingItem
+		if err := rows.Scan(&it.ProductID, &it.Barcode, &it.Name, &it.Qty, &it.Stock); err != nil {
+			return nil, 0, err
+		}
+		total += it.Qty
+		items = append(items, it)
+	}
+	return items, total, rows.Err()
+}
+
+// receivingSessionStatus reports a session's status and whether it exists.
+func receivingSessionStatus(db *sql.DB, id int) (status string, found bool, err error) {
+	err = db.QueryRow("SELECT status FROM receiving_sessions WHERE id = ?", id).Scan(&status)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	return status, true, nil
+}
+
+func receivingDetailHandler(db *sql.DB, tmpl *template.Template) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id, err := strconv.Atoi(r.PathValue("id"))
+		if err != nil {
+			http.NotFound(w, r)
+			return
+		}
+
+		var label, status string
+		var startedAt time.Time
+		err = db.QueryRow(
+			"SELECT label, status, started_at FROM receiving_sessions WHERE id = ?", id,
+		).Scan(&label, &status, &startedAt)
+		if errors.Is(err, sql.ErrNoRows) {
+			http.NotFound(w, r)
+			return
+		}
+		if err != nil {
+			log.Printf("receiving detail query: %v", err)
+			http.Error(w, "failed to load session", http.StatusInternalServerError)
+			return
+		}
+
+		items, total, err := loadReceivingItems(db, id)
+		if err != nil {
+			log.Printf("receiving detail items: %v", err)
+			http.Error(w, "failed to load session", http.StatusInternalServerError)
+			return
+		}
+		itemsBytes, err := json.Marshal(items)
+		if err != nil {
+			log.Printf("receiving detail marshal: %v", err)
+			http.Error(w, "failed to load session", http.StatusInternalServerError)
+			return
+		}
+
+		data := receivingDetailData{
+			ID:        id,
+			Label:     label,
+			Status:    status,
+			StartedAt: startedAt.In(storeLocation).Format("2 Jan, 3:04 PM"),
+			TotalQty:  total,
+			ItemsJSON: template.JS(itemsBytes),
+		}
+		if err := tmpl.ExecuteTemplate(w, "receiving_detail.html", data); err != nil {
+			log.Printf("render receiving_detail: %v", err)
+		}
+	}
+}
+
+// writeReceivingItems writes a session's current items as the JSON response
+// shared by the scan and item-adjust endpoints. scanned is the just-scanned
+// product name (for a status message) or "" when not applicable.
+func writeReceivingItems(db *sql.DB, w http.ResponseWriter, sessionID int, scanned string) {
+	items, total, err := loadReceivingItems(db, sessionID)
+	if err != nil {
+		log.Printf("reload receiving items: %v", err)
+		writeJSONError(w, http.StatusInternalServerError, "failed to load items")
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{
+		"items":      items,
+		"total_qty":  total,
+		"item_count": len(items),
+		"scanned":    scanned,
+	})
+}
+
+func receivingScanHandler(db *sql.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id, err := strconv.Atoi(r.PathValue("id"))
+		if err != nil {
+			writeJSONError(w, http.StatusBadRequest, "bad session id")
+			return
+		}
+		status, found, err := receivingSessionStatus(db, id)
+		if err != nil {
+			writeJSONError(w, http.StatusInternalServerError, "lookup failed")
+			return
+		}
+		if !found {
+			writeJSONError(w, http.StatusNotFound, "session not found")
+			return
+		}
+		if status != "active" {
+			writeJSONError(w, http.StatusConflict, "session already finalized")
+			return
+		}
+
+		var req struct {
+			Barcode string `json:"barcode"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeJSONError(w, http.StatusBadRequest, "bad request")
+			return
+		}
+		barcode := normalizeBarcode(req.Barcode)
+		if barcode == "" {
+			writeJSONError(w, http.StatusBadRequest, "barcode required")
+			return
+		}
+
+		var productID int
+		var name string
+		err = db.QueryRow("SELECT id, name FROM products WHERE barcode = ?", barcode).Scan(&productID, &name)
+		if errors.Is(err, sql.ErrNoRows) {
+			writeJSONError(w, http.StatusNotFound, "barcode not found")
+			return
+		}
+		if err != nil {
+			log.Printf("receiving scan lookup: %v", err)
+			writeJSONError(w, http.StatusInternalServerError, "lookup failed")
+			return
+		}
+
+		// Upsert: first scan inserts qty 1, repeat scans bump it.
+		_, err = db.Exec(
+			`INSERT INTO receiving_session_items (session_id, product_id, qty)
+			 VALUES (?, ?, 1)
+			 ON CONFLICT(session_id, product_id) DO UPDATE SET qty = qty + 1`,
+			id, productID,
+		)
+		if err != nil {
+			log.Printf("receiving scan upsert: %v", err)
+			writeJSONError(w, http.StatusInternalServerError, "failed to add item")
+			return
+		}
+
+		writeReceivingItems(db, w, id, name)
+	}
+}
+
+func receivingItemHandler(db *sql.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id, err := strconv.Atoi(r.PathValue("id"))
+		if err != nil {
+			writeJSONError(w, http.StatusBadRequest, "bad session id")
+			return
+		}
+		status, found, err := receivingSessionStatus(db, id)
+		if err != nil {
+			writeJSONError(w, http.StatusInternalServerError, "lookup failed")
+			return
+		}
+		if !found {
+			writeJSONError(w, http.StatusNotFound, "session not found")
+			return
+		}
+		if status != "active" {
+			writeJSONError(w, http.StatusConflict, "session already finalized")
+			return
+		}
+
+		var req struct {
+			ProductID int    `json:"product_id"`
+			Op        string `json:"op"` // "inc" | "dec" | "remove"
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeJSONError(w, http.StatusBadRequest, "bad request")
+			return
+		}
+
+		switch req.Op {
+		case "inc":
+			_, err = db.Exec(
+				"UPDATE receiving_session_items SET qty = qty + 1 WHERE session_id = ? AND product_id = ?",
+				id, req.ProductID)
+		case "dec":
+			// Decrement, then drop the row if it hit zero — qty 0 is the "remove me"
+			// signal (decision 12). Two statements, one transaction.
+			ctx := r.Context()
+			var tx *sql.Tx
+			tx, err = db.BeginTx(ctx, nil)
+			if err == nil {
+				_, err = tx.ExecContext(ctx,
+					"UPDATE receiving_session_items SET qty = qty - 1 WHERE session_id = ? AND product_id = ?",
+					id, req.ProductID)
+				if err == nil {
+					_, err = tx.ExecContext(ctx,
+						"DELETE FROM receiving_session_items WHERE session_id = ? AND product_id = ? AND qty <= 0",
+						id, req.ProductID)
+				}
+				if err == nil {
+					err = tx.Commit()
+				} else {
+					tx.Rollback()
+				}
+			}
+		case "remove":
+			_, err = db.Exec(
+				"DELETE FROM receiving_session_items WHERE session_id = ? AND product_id = ?",
+				id, req.ProductID)
+		default:
+			writeJSONError(w, http.StatusBadRequest, "unknown op")
+			return
+		}
+		if err != nil {
+			log.Printf("receiving item %q: %v", req.Op, err)
+			writeJSONError(w, http.StatusInternalServerError, "failed to update item")
+			return
+		}
+
+		writeReceivingItems(db, w, id, "")
+	}
+}
+
+func receivingDeleteHandler(db *sql.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id, err := strconv.Atoi(r.PathValue("id"))
+		if err != nil {
+			http.NotFound(w, r)
+			return
+		}
+
+		ctx := r.Context()
+		tx, err := db.BeginTx(ctx, nil)
+		if err != nil {
+			log.Printf("begin delete session tx: %v", err)
+			http.Error(w, "failed to delete session", http.StatusInternalServerError)
+			return
+		}
+		defer tx.Rollback()
+
+		// Only an active session can be deleted; a finalized one changed stock and
+		// is permanent. If it's gone or finalized, just bounce back to the list.
+		var status string
+		err = tx.QueryRowContext(ctx, "SELECT status FROM receiving_sessions WHERE id = ?", id).Scan(&status)
+		if errors.Is(err, sql.ErrNoRows) || (err == nil && status != "active") {
+			http.Redirect(w, r, "/receiving", http.StatusSeeOther)
+			return
+		}
+		if err != nil {
+			log.Printf("delete session status: %v", err)
+			http.Error(w, "failed to delete session", http.StatusInternalServerError)
+			return
+		}
+
+		// Items first — they reference the session (FK), so the parent can't go
+		// while children point at it.
+		if _, err := tx.ExecContext(ctx, "DELETE FROM receiving_session_items WHERE session_id = ?", id); err != nil {
+			log.Printf("delete session items: %v", err)
+			http.Error(w, "failed to delete session", http.StatusInternalServerError)
+			return
+		}
+		if _, err := tx.ExecContext(ctx, "DELETE FROM receiving_sessions WHERE id = ?", id); err != nil {
+			log.Printf("delete session: %v", err)
+			http.Error(w, "failed to delete session", http.StatusInternalServerError)
+			return
+		}
+		if err := tx.Commit(); err != nil {
+			log.Printf("commit delete session: %v", err)
+			http.Error(w, "failed to delete session", http.StatusInternalServerError)
+			return
+		}
 		http.Redirect(w, r, "/receiving", http.StatusSeeOther)
 	}
 }
