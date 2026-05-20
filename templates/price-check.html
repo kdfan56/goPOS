@@ -2,52 +2,111 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Price Check — goPOS</title>
 <style>
-  body { font-family: system-ui, sans-serif; max-width: 700px; margin: 1rem auto; padding: 0 1rem; color: #222; }
-  h1 { margin: 0 0 1rem; font-size: 1.5rem; }
+  * { box-sizing: border-box; }
+  body { font-family: system-ui, sans-serif; margin: 0; padding: 0; color: #222; background: #fafafa; min-height: 100vh; }
 
-  .scan-row { display: flex; gap: 0.5rem; align-items: center; padding: 0.75rem; background: #f4f4f4; border-radius: 6px; }
-  .scan-row label { font-weight: 600; }
-  .scan-row input { flex: 1; padding: 0.5rem; font-size: 1.1rem; border: 1px solid #ccc; border-radius: 4px; }
+  header { background: #222; color: #fff; padding: 0.75rem 1rem; }
+  header h1 { margin: 0; font-size: 1.1rem; font-weight: 600; letter-spacing: 0.5px; }
 
-  .msg { margin: 0.5rem 0; padding: 0.5rem; border-radius: 4px; min-height: 1.5rem; }
-  .msg.error { background: #ffe5e5; color: #b00; }
+  .wrap { max-width: 500px; margin: 0 auto; padding: 1rem; }
 
-  .result { margin: 1rem 0; padding: 1.5rem; background: #f4f4f4; border-radius: 6px; text-align: center; }
-  .result .name { font-size: 1.4rem; font-weight: 600; margin-bottom: 0.5rem; }
-  .result .price { font-size: 2.4rem; font-weight: 700; color: #000; }
-  .result.empty { color: #888; font-style: italic; }
+  .video-frame {
+    position: relative; width: 100%; aspect-ratio: 4/3;
+    background: #000; border-radius: 8px; overflow: hidden;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .video-frame video { width: 100%; height: 100%; object-fit: cover; }
+  .video-frame .placeholder { color: #ccc; text-align: center; padding: 1rem; font-size: 0.9rem; }
+  .scan-line {
+    position: absolute; left: 5%; right: 5%; top: 50%;
+    height: 2px; background: rgba(255, 60, 60, 0.85);
+    box-shadow: 0 0 8px rgba(255, 60, 60, 0.7);
+    pointer-events: none;
+  }
+
+  .status { margin: 0.75rem 0; padding: 0.5rem 0.75rem; border-radius: 6px; font-size: 0.9rem; min-height: 1.5rem; }
+  .status.idle { background: #eef; color: #335; }
+  .status.error { background: #fee; color: #b00; }
+  .status.ok { background: #efe; color: #060; }
+
+  .manual { background: #fff; border: 1px solid #ddd; border-radius: 8px; padding: 0.75rem; margin-top: 1rem; }
+  .manual label { font-size: 0.85rem; color: #555; display: block; margin-bottom: 0.4rem; }
+  .manual-row { display: flex; gap: 0.5rem; }
+  .manual input { flex: 1; padding: 0.6rem; font-size: 1rem; border: 1px solid #ccc; border-radius: 4px; }
+  .manual button { padding: 0.6rem 1rem; font-size: 1rem; background: #47a; color: white; border: none; border-radius: 4px; cursor: pointer; }
+
+  .result {
+    display: none; background: #fff; border-radius: 12px; padding: 1.5rem;
+    box-shadow: 0 2px 12px rgba(0,0,0,0.08); margin-top: 1rem; text-align: center;
+  }
+  .result.show { display: block; }
+  .result .name { font-size: 1.5rem; font-weight: 700; margin-bottom: 0.5rem; }
+  .result .price { font-size: 2.6rem; font-weight: 700; color: #060; }
+  .again-btn {
+    width: 100%; padding: 0.9rem; margin-top: 1.25rem; font-size: 1.1rem;
+    background: #4a7; color: white; border: none; border-radius: 6px; cursor: pointer; font-weight: 600;
+  }
+  .notfound { border-left: 4px solid #b40; }
+  .notfound .name { color: #b40; }
 </style>
 </head>
 <body>
-<h1>Price Check</h1>
+<header><h1>goPOS — Price Check</h1></header>
 
-<div class="scan-row">
-  <label for="barcode">Scan:</label>
-  <input id="barcode" type="text" autocomplete="off" autofocus placeholder="Scan barcode and press Enter">
+<div class="wrap">
+  <div class="video-frame">
+    <video id="video" playsinline muted></video>
+    <div id="video-placeholder" class="placeholder">Starting camera...</div>
+    <div class="scan-line"></div>
+  </div>
+
+  <div id="status" class="status idle">Initialising scanner...</div>
+
+  <div id="result" class="result">
+    <div class="name" id="r-name"></div>
+    <div class="price">Rs. <span id="r-price"></span></div>
+    <button class="again-btn" id="again-btn">Scan Another</button>
+  </div>
+
+  <div id="notfound" class="result notfound">
+    <div class="name">Barcode not in system</div>
+    <div class="barcode" id="nf-barcode"></div>
+    <button class="again-btn" id="nf-again-btn">Scan Another</button>
+  </div>
+
+  <div class="manual">
+    <label for="manual-input">Manual barcode entry (use if camera is blocked):</label>
+    <div class="manual-row">
+      <input id="manual-input" type="text" inputmode="numeric" autocomplete="off" placeholder="Type or scan barcode">
+      <button id="manual-btn">Look up</button>
+    </div>
+  </div>
 </div>
 
-<div id="msg" class="msg"></div>
-
-<div id="result" class="result empty">Scan an item to see its price.</div>
-
+<script src="https://unpkg.com/@zxing/library@0.23.0/umd/index.min.js"></script>
 <script>
-const barcodeInput = document.getElementById('barcode');
-const msg = document.getElementById('msg');
-const result = document.getElementById('result');
+const statusEl = document.getElementById('status');
+const resultEl = document.getElementById('result');
+const videoEl = document.getElementById('video');
+const placeholderEl = document.getElementById('video-placeholder');
+const rName = document.getElementById('r-name');
+const rPrice = document.getElementById('r-price');
+const againBtn = document.getElementById('again-btn');
+const notFoundEl = document.getElementById('notfound');
+const nfBarcode = document.getElementById('nf-barcode');
+const nfAgainBtn = document.getElementById('nf-again-btn');
+const manualInput = document.getElementById('manual-input');
+const manualBtn = document.getElementById('manual-btn');
 
-let msgTimer = 0;
-function showMessage(text, type) {
-  msg.textContent = text;
-  msg.className = 'msg ' + (type || '');
-  clearTimeout(msgTimer);
-  if (text) msgTimer = setTimeout(() => { msg.textContent = ''; msg.className = 'msg'; }, 3000);
-}
+let scanning = true;
+let controls = null;
 
-function focusBarcode() {
-  barcodeInput.value = '';
-  barcodeInput.focus();
+function setStatus(text, kind) {
+  statusEl.textContent = text;
+  statusEl.className = 'status ' + (kind || 'idle');
 }
 
 function escapeHtml(s) {
@@ -56,7 +115,30 @@ function escapeHtml(s) {
     .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
 
+function showResult(p) {
+  rName.textContent = p.name;
+  rPrice.textContent = p.price_rupees;
+  resultEl.classList.add('show');
+}
+
+function hideResult() {
+  resultEl.classList.remove('show');
+}
+
+function showNotFound(barcode) {
+  hideResult();
+  nfBarcode.textContent = barcode;
+  notFoundEl.classList.add('show');
+}
+
+function hideNotFound() {
+  notFoundEl.classList.remove('show');
+}
+
 async function lookup(barcode) {
+  barcode = String(barcode).trim();
+  if (!barcode) { setStatus('Empty barcode', 'error'); return; }
+  setStatus('Looking up ' + barcode + '...', 'idle');
   try {
     const res = await fetch('/pos/scan', {
       method: 'POST',
@@ -64,35 +146,83 @@ async function lookup(barcode) {
       body: JSON.stringify({ barcode }),
     });
     if (res.status === 404) {
-      result.className = 'result empty';
-      result.textContent = 'Barcode ' + barcode + ' not found.';
+      setStatus('Barcode not in system', 'error');
+      showNotFound(barcode);
       return;
     }
-    if (!res.ok) { showMessage('Lookup failed (' + res.status + ')', 'error'); return; }
+    if (!res.ok) {
+      setStatus('Lookup failed (' + res.status + ')', 'error');
+      hideResult();
+      hideNotFound();
+      return;
+    }
     const p = await res.json();
-    result.className = 'result';
-    result.innerHTML = '<div class="name">' + escapeHtml(p.name) + '</div>'
-      + '<div class="price">Rs. ' + p.price_rupees + '</div>';
+    setStatus('Found: ' + p.name, 'ok');
+    hideNotFound();
+    showResult(p);
   } catch (e) {
-    showMessage('Network error', 'error');
+    setStatus('Network error', 'error');
+    hideResult();
+    hideNotFound();
   }
 }
 
-barcodeInput.addEventListener('keydown', (e) => {
+function needsHttpsHint() {
+  return location.protocol === 'http:'
+      && location.hostname !== 'localhost'
+      && location.hostname !== '127.0.0.1';
+}
+
+async function startCamera() {
+  if (!window.ZXing) {
+    setStatus('Barcode library failed to load (no internet?)', 'error');
+    return;
+  }
+  try {
+    placeholderEl.style.display = 'none';
+    const reader = new ZXing.BrowserMultiFormatReader();
+    const constraints = { video: { facingMode: { ideal: 'environment' } } };
+    setStatus('Requesting camera...', 'idle');
+
+    controls = await reader.decodeFromConstraints(constraints, videoEl, (result, err) => {
+      if (result && scanning) {
+        scanning = false;
+        lookup(result.getText());
+      }
+    });
+    setStatus('Camera ready. Point at barcode.', 'idle');
+  } catch (e) {
+    placeholderEl.textContent = 'Camera unavailable — use manual entry below';
+    let msg = 'Camera error: ' + (e.message || e.name || 'unknown');
+    if (needsHttpsHint()) msg += ' (browsers require HTTPS for camera on non-localhost addresses)';
+    setStatus(msg, 'error');
+  }
+}
+
+function resetForNextScan() {
+  hideResult();
+  hideNotFound();
+  scanning = true;
+  setStatus('Ready. Point at next barcode.', 'idle');
+  manualInput.value = '';
+}
+
+againBtn.addEventListener('click', resetForNextScan);
+nfAgainBtn.addEventListener('click', resetForNextScan);
+
+manualBtn.addEventListener('click', () => {
+  const v = manualInput.value.trim();
+  if (v) lookup(v);
+});
+
+manualInput.addEventListener('keydown', (e) => {
   if (e.key === 'Enter') {
     e.preventDefault();
-    const v = barcodeInput.value.trim();
-    if (v) lookup(v);
-    focusBarcode();
+    manualBtn.click();
   }
 });
 
-// Refocus the barcode input on any dead-space click so the scanner never misses a beep.
-document.addEventListener('click', (e) => {
-  if (!e.target.closest('button, input')) barcodeInput.focus();
-});
-
-focusBarcode();
+startCamera();
 </script>
 </body>
 </html>
