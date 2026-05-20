@@ -79,6 +79,7 @@ func main() {
 	mux.HandleFunc("GET /products/new", newProductFormHandler(tmpl))
 	mux.HandleFunc("POST /products/new", createProductHandler(db, tmpl))
 	mux.HandleFunc("GET /pos", posHandler(tmpl))
+	mux.HandleFunc("GET /price-check", priceCheckPageHandler(tmpl))
 	mux.HandleFunc("POST /pos/scan", scanHandler(db))
 	mux.HandleFunc("GET /scan", scanPageHandler(tmpl))
 	mux.HandleFunc("POST /pos/checkout", checkoutHandler(db))
@@ -86,12 +87,17 @@ func main() {
 	mux.HandleFunc("POST /stock/update", stockUpdateHandler(db))
 	mux.HandleFunc("GET /reports", reportsHandler(db, tmpl))
 
-	user := os.Getenv("GOPOS_USER")
-	pass := os.Getenv("GOPOS_PASS")
-	if user == "" || pass == "" {
+	adminUser := os.Getenv("GOPOS_USER")
+	adminPass := os.Getenv("GOPOS_PASS")
+	if adminUser == "" || adminPass == "" {
 		log.Fatal("GOPOS_USER and GOPOS_PASS env vars must be set before starting the server")
 	}
-	handler := requireAuth(user, pass, mux)
+	cashierUser := os.Getenv("GOPOS_CASHIER")
+	cashierPass := os.Getenv("GOPOS_CASHIER_PASS")
+	if cashierUser == "" || cashierPass == "" {
+		log.Fatal("GOPOS_CASHIER and GOPOS_CASHIER_PASS env vars must be set before starting the server")
+	}
+	handler := requireAuth(adminUser, adminPass, cashierUser, cashierPass, mux)
 
 	addr := ":8443"
 	log.Printf("listening on %s (TLS)", addr)
@@ -100,21 +106,57 @@ func main() {
 	}
 }
 
-func requireAuth(user, pass string, next http.Handler) http.Handler {
-	userBytes := []byte(user)
-	passBytes := []byte(pass)
+// requireAuth gates every request behind HTTP Basic Auth and a role.
+// Two credential pairs: admin (full access) and cashier (POS + price check only).
+// Whichever pair matches sets the role; cashiers are then restricted by cashierAllowed.
+func requireAuth(adminUser, adminPass, cashierUser, cashierPass string, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		u, p, ok := r.BasicAuth()
-		// constant-time compare prevents timing-based username/password guessing
-		userOK := ok && subtle.ConstantTimeCompare([]byte(u), userBytes) == 1
-		passOK := ok && subtle.ConstantTimeCompare([]byte(p), passBytes) == 1
-		if !userOK || !passOK {
+		if !ok {
 			w.Header().Set("WWW-Authenticate", `Basic realm="goPOS"`)
 			http.Error(w, "auth required", http.StatusUnauthorized)
 			return
 		}
+
+		role := ""
+		if credMatch(u, p, adminUser, adminPass) {
+			role = "admin"
+		} else if credMatch(u, p, cashierUser, cashierPass) {
+			role = "cashier"
+		}
+		if role == "" {
+			w.Header().Set("WWW-Authenticate", `Basic realm="goPOS"`)
+			http.Error(w, "auth required", http.StatusUnauthorized)
+			return
+		}
+
+		if role == "cashier" && !cashierAllowed(r.URL.Path) {
+			http.Error(w, "forbidden — cashier access is limited to POS and price check", http.StatusForbidden)
+			return
+		}
+
 		next.ServeHTTP(w, r)
 	})
+}
+
+// credMatch compares supplied credentials against an expected pair in constant
+// time, so an attacker can't learn the username/password from response timing.
+func credMatch(u, p, wantUser, wantPass string) bool {
+	userOK := subtle.ConstantTimeCompare([]byte(u), []byte(wantUser)) == 1
+	passOK := subtle.ConstantTimeCompare([]byte(p), []byte(wantPass)) == 1
+	return userOK && passOK
+}
+
+// cashierAllowed is the allow-list of paths a cashier role may reach. Everything
+// not listed here (products, stock, reports, receiving) is admin-only. Keep this
+// in sync with the access matrix in NOTES.md when routes are added.
+func cashierAllowed(path string) bool {
+	switch path {
+	case "/", "/pos", "/price-check", "/pos/scan", "/pos/checkout":
+		return true
+	}
+	// Receipts are /receipt/{id} — cashier prints what they sell.
+	return strings.HasPrefix(path, "/receipt/")
 }
 
 func seedIfEmpty(db *sql.DB) error {
@@ -174,6 +216,14 @@ func posHandler(tmpl *template.Template) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if err := tmpl.ExecuteTemplate(w, "pos.html", nil); err != nil {
 			log.Printf("render pos: %v", err)
+		}
+	}
+}
+
+func priceCheckPageHandler(tmpl *template.Template) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if err := tmpl.ExecuteTemplate(w, "price-check.html", nil); err != nil {
+			log.Printf("render price-check: %v", err)
 		}
 	}
 }

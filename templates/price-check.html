@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Price Check — goPOS</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 700px; margin: 1rem auto; padding: 0 1rem; color: #222; }
+  h1 { margin: 0 0 1rem; font-size: 1.5rem; }
+
+  .scan-row { display: flex; gap: 0.5rem; align-items: center; padding: 0.75rem; background: #f4f4f4; border-radius: 6px; }
+  .scan-row label { font-weight: 600; }
+  .scan-row input { flex: 1; padding: 0.5rem; font-size: 1.1rem; border: 1px solid #ccc; border-radius: 4px; }
+
+  .msg { margin: 0.5rem 0; padding: 0.5rem; border-radius: 4px; min-height: 1.5rem; }
+  .msg.error { background: #ffe5e5; color: #b00; }
+
+  .result { margin: 1rem 0; padding: 1.5rem; background: #f4f4f4; border-radius: 6px; text-align: center; }
+  .result .name { font-size: 1.4rem; font-weight: 600; margin-bottom: 0.5rem; }
+  .result .price { font-size: 2.4rem; font-weight: 700; color: #000; }
+  .result.empty { color: #888; font-style: italic; }
+</style>
+</head>
+<body>
+<h1>Price Check</h1>
+
+<div class="scan-row">
+  <label for="barcode">Scan:</label>
+  <input id="barcode" type="text" autocomplete="off" autofocus placeholder="Scan barcode and press Enter">
+</div>
+
+<div id="msg" class="msg"></div>
+
+<div id="result" class="result empty">Scan an item to see its price.</div>
+
+<script>
+const barcodeInput = document.getElementById('barcode');
+const msg = document.getElementById('msg');
+const result = document.getElementById('result');
+
+let msgTimer = 0;
+function showMessage(text, type) {
+  msg.textContent = text;
+  msg.className = 'msg ' + (type || '');
+  clearTimeout(msgTimer);
+  if (text) msgTimer = setTimeout(() => { msg.textContent = ''; msg.className = 'msg'; }, 3000);
+}
+
+function focusBarcode() {
+  barcodeInput.value = '';
+  barcodeInput.focus();
+}
+
+function escapeHtml(s) {
+  return String(s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+async function lookup(barcode) {
+  try {
+    const res = await fetch('/pos/scan', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ barcode }),
+    });
+    if (res.status === 404) {
+      result.className = 'result empty';
+      result.textContent = 'Barcode ' + barcode + ' not found.';
+      return;
+    }
+    if (!res.ok) { showMessage('Lookup failed (' + res.status + ')', 'error'); return; }
+    const p = await res.json();
+    result.className = 'result';
+    result.innerHTML = '<div class="name">' + escapeHtml(p.name) + '</div>'
+      + '<div class="price">Rs. ' + p.price_rupees + '</div>';
+  } catch (e) {
+    showMessage('Network error', 'error');
+  }
+}
+
+barcodeInput.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') {
+    e.preventDefault();
+    const v = barcodeInput.value.trim();
+    if (v) lookup(v);
+    focusBarcode();
+  }
+});
+
+// Refocus the barcode input on any dead-space click so the scanner never misses a beep.
+document.addEventListener('click', (e) => {
+  if (!e.target.closest('button, input')) barcodeInput.focus();
+});
+
+focusBarcode();
+</script>
+</body>
+</html>
