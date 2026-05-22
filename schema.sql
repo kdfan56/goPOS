@@ -44,6 +44,20 @@ CREATE TABLE IF NOT EXISTS stock_movements (
 -- Composite index supports the "last N additions for this product" query on /scan.
 CREATE INDEX IF NOT EXISTS idx_movements_product_created ON stock_movements(product_id, created_at DESC);
 
+-- Suppliers: who we buy stock from. Minimal — name, contact details, active flag.
+-- supplier_id is nullable on receiving_sessions so old sessions without a supplier
+-- are not affected. active=0 hides a supplier from new-session dropdowns but keeps
+-- them on historical sessions.
+CREATE TABLE IF NOT EXISTS suppliers (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    name           TEXT NOT NULL,
+    phone          TEXT,
+    contact_person TEXT,
+    address        TEXT,
+    active         INTEGER NOT NULL DEFAULT 1,
+    created_at     DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
 -- Receiving sessions (Phase 3.5b). See decisions/09-receiving-workflow.md and
 -- decisions/12-receiving-sessions-schema.md.
 -- A session is one shipment being scanned in. Person starts it with a label,
@@ -54,6 +68,7 @@ CREATE INDEX IF NOT EXISTS idx_movements_product_created ON stock_movements(prod
 CREATE TABLE IF NOT EXISTS receiving_sessions (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
     label        TEXT NOT NULL,
+    supplier_id  INTEGER REFERENCES suppliers(id),
     status       TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active','finalized')),
     started_at   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     finalized_at DATETIME

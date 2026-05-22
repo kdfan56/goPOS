@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Suppliers — goPOS</title>
+<style>
+  body {
+    margin: 0; background: #f2f3f3; color: #16191f;
+    font-family: "Amazon Ember", "Helvetica Neue", Roboto, Arial, sans-serif;
+  }
+  .gp-content { max-width: 900px; margin: 0 auto; padding: 1.5rem 1rem; }
+  .header-row { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem; gap: 1rem; }
+  h1 { margin: 0; font-size: 1.5rem; font-weight: 700; }
+  .add-btn {
+    padding: 0.45rem 1.25rem; border-radius: 0; text-decoration: none;
+    font-weight: 700; white-space: nowrap; font-size: 0.875rem;
+    background: #ec7211; color: #fff; border: 1px solid #ec7211;
+  }
+  .add-btn:hover { background: #eb5f07; border-color: #eb5f07; }
+  table { width: 100%; border-collapse: collapse; background: #fff; border: 1px solid #d5dbdb; }
+  th, td { padding: 0.7rem 1rem; text-align: left; border-bottom: 1px solid #e9ebed; font-size: 0.875rem; }
+  th { background: #fafafa; color: #414d5c; font-weight: 700; border-bottom: 1px solid #d5dbdb; }
+  tr:last-child td { border-bottom: none; }
+  .inactive { color: #5f6b7a; font-style: italic; }
+  .badge-inactive {
+    display: inline-block; padding: 0.1rem 0.45rem; font-size: 0.75rem; font-weight: 700;
+    background: #f2f3f3; color: #5f6b7a; border: 1px solid #aab7b8; border-radius: 0;
+  }
+  .edit-link { color: #0972d3; text-decoration: none; font-size: 0.875rem; }
+  .edit-link:hover { text-decoration: underline; }
+  .empty { color: #5f6b7a; }
+</style>
+</head>
+<body>
+{{template "nav"}}
+<div class="gp-content">
+<div class="header-row">
+  <h1>Suppliers ({{len .Suppliers}})</h1>
+  <a href="/suppliers/new" class="add-btn">+ Add Supplier</a>
+</div>
+
+{{if .Suppliers}}
+<table>
+  <thead>
+    <tr>
+      <th>Name</th>
+      <th>Contact person</th>
+      <th>Phone</th>
+      <th>Address</th>
+      <th></th>
+    </tr>
+  </thead>
+  <tbody>
+    {{range .Suppliers}}
+    <tr>
+      <td>
+        {{if not .Active}}<span class="badge-inactive">Inactive</span> {{end}}
+        <span {{if not .Active}}class="inactive"{{end}}>{{.Name}}</span>
+      </td>
+      <td>{{.ContactPerson}}</td>
+      <td>{{.Phone}}</td>
+      <td>{{.Address}}</td>
+      <td><a href="/suppliers/{{.ID}}/edit" class="edit-link">Edit</a></td>
+    </tr>
+    {{end}}
+  </tbody>
+</table>
+{{else}}
+<p class="empty">No suppliers yet. Add one when you know which companies you buy from.</p>
+{{end}}
+</div>
+</body>
+</html>

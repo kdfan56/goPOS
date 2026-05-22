@@ -18,6 +18,10 @@
   .start-row input:focus { outline: 2px solid #0972d3; outline-offset: -1px; border-color: #0972d3; }
   .start-row button { padding: 0.55rem 1.4rem; font-size: 0.95rem; font-weight: 700; font-family: inherit; background: #ec7211; color: #fff; border: 1px solid #ec7211; border-radius: 0; cursor: pointer; }
   .start-row button:hover { background: #eb5f07; border-color: #eb5f07; }
+  .supplier-row { margin-top: 0.75rem; }
+  .supplier-row label { font-size: 0.875rem; color: #414d5c; }
+  .supplier-row select { margin-top: 0.3rem; width: 100%; padding: 0.5rem 0.7rem; font-size: 0.95rem; font-family: inherit; border: 1px solid #aab7b8; border-radius: 0; background: #fff; }
+  .supplier-row select:focus { outline: 2px solid #0972d3; outline-offset: -1px; border-color: #0972d3; }
 
   .banner { padding: 0.75rem 1rem; border-radius: 0; margin-bottom: 1rem; }
   .error-banner { background: #fdf3f1; color: #d91515; border: 1px solid #d91515; }
@@ -47,6 +51,17 @@
              placeholder="e.g. Truck 1 - Atlas Wholesale">
       <button type="submit">Start session</button>
     </div>
+    {{if .Suppliers}}
+    <div class="supplier-row">
+      <label for="supplier_id">Supplier (optional)</label>
+      <select id="supplier_id" name="supplier_id">
+        <option value="">— no supplier —</option>
+        {{range .Suppliers}}
+        <option value="{{.ID}}">{{.Name}}</option>
+        {{end}}
+      </select>
+    </div>
+    {{end}}
   </form>
 </div>
 
@@ -55,6 +70,7 @@
   <thead>
     <tr>
       <th>Shipment</th>
+      <th>Supplier</th>
       <th>Started</th>
       <th class="right">Items</th>
       <th class="right">Total qty</th>
@@ -63,7 +79,8 @@
   <tbody>
     {{range .Sessions}}
     <tr>
-      <td>{{.Label}}</td>
+      <td><a href="/receiving/{{.ID}}" style="color:#0972d3;text-decoration:none;">{{.Label}}</a></td>
+      <td>{{if .SupplierName}}{{.SupplierName}}{{else}}<span style="color:#5f6b7a">—</span>{{end}}</td>
       <td>{{.StartedAt}}</td>
       <td class="right">{{.ItemCount}}</td>
       <td class="right">{{.TotalQty}}</td>

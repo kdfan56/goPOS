@@ -62,6 +62,14 @@ func main() {
 		log.Fatalf("apply schema: %v", err)
 	}
 
+	// One-off migration: add supplier_id to existing receiving_sessions tables.
+	// SQLite ALTER TABLE has no IF NOT EXISTS; we ignore the "duplicate column" error.
+	if _, err := db.Exec(`ALTER TABLE receiving_sessions ADD COLUMN supplier_id INTEGER REFERENCES suppliers(id)`); err != nil {
+		if !strings.Contains(err.Error(), "duplicate column") {
+			log.Fatalf("migrate receiving_sessions.supplier_id: %v", err)
+		}
+	}
+
 	if err := seedIfEmpty(db); err != nil {
 		log.Fatalf("seed: %v", err)
 	}
@@ -91,6 +99,11 @@ func main() {
 	mux.HandleFunc("POST /receiving/{id}/item", receivingItemHandler(db))
 	mux.HandleFunc("POST /receiving/{id}/delete", receivingDeleteHandler(db))
 	mux.HandleFunc("POST /receiving/{id}/finalize", receivingFinalizeHandler(db))
+	mux.HandleFunc("GET /suppliers", suppliersHandler(db, tmpl))
+	mux.HandleFunc("GET /suppliers/new", newSupplierFormHandler(tmpl))
+	mux.HandleFunc("POST /suppliers/new", createSupplierHandler(db, tmpl))
+	mux.HandleFunc("GET /suppliers/{id}/edit", editSupplierFormHandler(db, tmpl))
+	mux.HandleFunc("POST /suppliers/{id}/edit", updateSupplierHandler(db, tmpl))
 
 	adminUser := os.Getenv("GOPOS_USER")
 	adminPass := os.Getenv("GOPOS_PASS")
@@ -825,17 +838,57 @@ func stockUpdateHandler(db *sql.DB) http.HandlerFunc {
 	}
 }
 
+type Supplier struct {
+	ID            int
+	Name          string
+	Phone         string
+	ContactPerson string
+	Address       string
+	Active        bool
+}
+
+type supplierListData struct {
+	Suppliers []Supplier
+}
+
+type supplierFormData struct {
+	Supplier Supplier
+	IsEdit   bool
+	Error    string
+}
+
 type ReceivingSession struct {
-	ID        int
-	Label     string
-	StartedAt string // formatted store-local, ready to render
-	ItemCount int    // distinct products scanned in
-	TotalQty  int    // sum of all qtys
+	ID           int
+	Label        string
+	SupplierName string // "" if no supplier linked
+	StartedAt    string // formatted store-local, ready to render
+	ItemCount    int    // distinct products scanned in
+	TotalQty     int    // sum of all qtys
 }
 
 type receivingListData struct {
-	Sessions []ReceivingSession
-	Error    string
+	Sessions  []ReceivingSession
+	Suppliers []Supplier // active suppliers, for the "Start session" dropdown
+	Error     string
+}
+
+// loadActiveSuppliers returns all active suppliers ordered by name.
+// Used for dropdowns on the receiving list page.
+func loadActiveSuppliers(db *sql.DB) ([]Supplier, error) {
+	rows, err := db.Query(`SELECT id, name FROM suppliers WHERE active = 1 ORDER BY name`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Supplier
+	for rows.Next() {
+		var s Supplier
+		if err := rows.Scan(&s.ID, &s.Name); err != nil {
+			return nil, err
+		}
+		out = append(out, s)
+	}
+	return out, rows.Err()
 }
 
 // renderReceivingList loads the active sessions and renders the list page.
@@ -843,11 +896,12 @@ type receivingListData struct {
 // that knows how to build this page (errMsg is "" for the normal GET).
 func renderReceivingList(db *sql.DB, tmpl *template.Template, w http.ResponseWriter, errMsg string) {
 	rows, err := db.Query(
-		`SELECT s.id, s.label, s.started_at,
+		`SELECT s.id, s.label, COALESCE(sup.name,''), s.started_at,
 		        COUNT(i.id) AS item_count,
 		        COALESCE(SUM(i.qty), 0) AS total_qty
 		 FROM receiving_sessions s
 		 LEFT JOIN receiving_session_items i ON i.session_id = s.id
+		 LEFT JOIN suppliers sup ON sup.id = s.supplier_id
 		 WHERE s.status = 'active'
 		 GROUP BY s.id
 		 ORDER BY s.started_at DESC`,
@@ -863,7 +917,7 @@ func renderReceivingList(db *sql.DB, tmpl *template.Template, w http.ResponseWri
 	for rows.Next() {
 		var s ReceivingSession
 		var startedAt time.Time
-		if err := rows.Scan(&s.ID, &s.Label, &startedAt, &s.ItemCount, &s.TotalQty); err != nil {
+		if err := rows.Scan(&s.ID, &s.Label, &s.SupplierName, &startedAt, &s.ItemCount, &s.TotalQty); err != nil {
 			log.Printf("receiving list scan: %v", err)
 			http.Error(w, "failed to load sessions", http.StatusInternalServerError)
 			return
@@ -871,6 +925,14 @@ func renderReceivingList(db *sql.DB, tmpl *template.Template, w http.ResponseWri
 		s.StartedAt = startedAt.In(storeLocation).Format("2 Jan, 3:04 PM")
 		data.Sessions = append(data.Sessions, s)
 	}
+
+	suppliers, err := loadActiveSuppliers(db)
+	if err != nil {
+		log.Printf("receiving list suppliers: %v", err)
+		http.Error(w, "failed to load suppliers", http.StatusInternalServerError)
+		return
+	}
+	data.Suppliers = suppliers
 
 	if err := tmpl.ExecuteTemplate(w, "receiving.html", data); err != nil {
 		log.Printf("render receiving: %v", err)
@@ -895,7 +957,14 @@ func createReceivingSessionHandler(db *sql.DB, tmpl *template.Template) http.Han
 			return
 		}
 
-		res, err := db.Exec("INSERT INTO receiving_sessions (label) VALUES (?)", label)
+		var supplierID sql.NullInt64
+		if sid := strings.TrimSpace(r.FormValue("supplier_id")); sid != "" {
+			if n, err := strconv.ParseInt(sid, 10, 64); err == nil {
+				supplierID = sql.NullInt64{Int64: n, Valid: true}
+			}
+		}
+
+		res, err := db.Exec("INSERT INTO receiving_sessions (label, supplier_id) VALUES (?, ?)", label, supplierID)
 		if err != nil {
 			log.Printf("create receiving session: %v", err)
 			renderReceivingList(db, tmpl, w, "Failed to start session.")
@@ -922,14 +991,15 @@ type ReceivingItem struct {
 }
 
 type receivingDetailData struct {
-	ID          int
-	Label       string
-	StartedAt   string
-	FinalizedAt string // "" while active
-	Status      string
-	TotalQty    int
-	Error       string      // surfaced from the ?err= query param
-	ItemsJSON   template.JS // marshaled []ReceivingItem, rendered into the page's JS
+	ID           int
+	Label        string
+	SupplierName string // "" if no supplier linked
+	StartedAt    string
+	FinalizedAt  string // "" while active
+	Status       string
+	TotalQty     int
+	Error        string      // surfaced from the ?err= query param
+	ItemsJSON    template.JS // marshaled []ReceivingItem, rendered into the page's JS
 }
 
 // loadReceivingItems returns a session's items (joined to product info), ordered
@@ -979,12 +1049,15 @@ func receivingDetailHandler(db *sql.DB, tmpl *template.Template) http.HandlerFun
 			return
 		}
 
-		var label, status string
+		var label, status, supplierName string
 		var startedAt time.Time
 		var finalizedAt sql.NullTime
 		err = db.QueryRow(
-			"SELECT label, status, started_at, finalized_at FROM receiving_sessions WHERE id = ?", id,
-		).Scan(&label, &status, &startedAt, &finalizedAt)
+			`SELECT rs.label, rs.status, rs.started_at, rs.finalized_at, COALESCE(sup.name,'')
+			 FROM receiving_sessions rs
+			 LEFT JOIN suppliers sup ON sup.id = rs.supplier_id
+			 WHERE rs.id = ?`, id,
+		).Scan(&label, &status, &startedAt, &finalizedAt, &supplierName)
 		if errors.Is(err, sql.ErrNoRows) {
 			http.NotFound(w, r)
 			return
@@ -1009,12 +1082,13 @@ func receivingDetailHandler(db *sql.DB, tmpl *template.Template) http.HandlerFun
 		}
 
 		data := receivingDetailData{
-			ID:        id,
-			Label:     label,
-			Status:    status,
-			StartedAt: startedAt.In(storeLocation).Format("2 Jan, 3:04 PM"),
-			TotalQty:  total,
-			ItemsJSON: template.JS(itemsBytes),
+			ID:           id,
+			Label:        label,
+			SupplierName: supplierName,
+			Status:       status,
+			StartedAt:    startedAt.In(storeLocation).Format("2 Jan, 3:04 PM"),
+			TotalQty:     total,
+			ItemsJSON:    template.JS(itemsBytes),
 		}
 		if finalizedAt.Valid {
 			data.FinalizedAt = finalizedAt.Time.In(storeLocation).Format("2 Jan, 3:04 PM")
@@ -1345,6 +1419,170 @@ func receivingFinalizeHandler(db *sql.DB) http.HandlerFunc {
 		}
 
 		http.Redirect(w, r, fmt.Sprintf("/receiving/%d", id), http.StatusSeeOther)
+	}
+}
+
+func suppliersHandler(db *sql.DB, tmpl *template.Template) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		rows, err := db.QueryContext(r.Context(),
+			`SELECT id, name, COALESCE(phone,''), COALESCE(contact_person,''), COALESCE(address,''), active
+			 FROM suppliers ORDER BY name`)
+		if err != nil {
+			log.Printf("suppliers query: %v", err)
+			http.Error(w, "failed to load suppliers", http.StatusInternalServerError)
+			return
+		}
+		defer rows.Close()
+		var data supplierListData
+		for rows.Next() {
+			var s Supplier
+			var active int
+			if err := rows.Scan(&s.ID, &s.Name, &s.Phone, &s.ContactPerson, &s.Address, &active); err != nil {
+				log.Printf("suppliers scan: %v", err)
+				http.Error(w, "failed to load suppliers", http.StatusInternalServerError)
+				return
+			}
+			s.Active = active == 1
+			data.Suppliers = append(data.Suppliers, s)
+		}
+		if err := tmpl.ExecuteTemplate(w, "suppliers.html", data); err != nil {
+			log.Printf("render suppliers: %v", err)
+		}
+	}
+}
+
+func newSupplierFormHandler(tmpl *template.Template) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if err := tmpl.ExecuteTemplate(w, "supplier_form.html", supplierFormData{}); err != nil {
+			log.Printf("render supplier form: %v", err)
+		}
+	}
+}
+
+func createSupplierHandler(db *sql.DB, tmpl *template.Template) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseForm(); err != nil {
+			http.Error(w, "bad form", http.StatusBadRequest)
+			return
+		}
+		name := strings.TrimSpace(r.FormValue("name"))
+		if name == "" {
+			tmpl.ExecuteTemplate(w, "supplier_form.html", supplierFormData{
+				Error: "Supplier name is required.",
+			})
+			return
+		}
+		_, err := db.ExecContext(r.Context(),
+			`INSERT INTO suppliers (name, phone, contact_person, address) VALUES (?, ?, ?, ?)`,
+			name,
+			strings.TrimSpace(r.FormValue("phone")),
+			strings.TrimSpace(r.FormValue("contact_person")),
+			strings.TrimSpace(r.FormValue("address")),
+		)
+		if err != nil {
+			log.Printf("create supplier: %v", err)
+			tmpl.ExecuteTemplate(w, "supplier_form.html", supplierFormData{
+				Supplier: Supplier{
+					Name:          name,
+					Phone:         strings.TrimSpace(r.FormValue("phone")),
+					ContactPerson: strings.TrimSpace(r.FormValue("contact_person")),
+					Address:       strings.TrimSpace(r.FormValue("address")),
+				},
+				Error: "Failed to save supplier.",
+			})
+			return
+		}
+		http.Redirect(w, r, "/suppliers", http.StatusSeeOther)
+	}
+}
+
+func editSupplierFormHandler(db *sql.DB, tmpl *template.Template) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id, err := strconv.Atoi(r.PathValue("id"))
+		if err != nil {
+			http.NotFound(w, r)
+			return
+		}
+		var s Supplier
+		var active int
+		err = db.QueryRowContext(r.Context(),
+			`SELECT id, name, COALESCE(phone,''), COALESCE(contact_person,''), COALESCE(address,''), active
+			 FROM suppliers WHERE id = ?`, id,
+		).Scan(&s.ID, &s.Name, &s.Phone, &s.ContactPerson, &s.Address, &active)
+		if errors.Is(err, sql.ErrNoRows) {
+			http.NotFound(w, r)
+			return
+		}
+		if err != nil {
+			log.Printf("edit supplier query: %v", err)
+			http.Error(w, "failed to load supplier", http.StatusInternalServerError)
+			return
+		}
+		s.Active = active == 1
+		if err := tmpl.ExecuteTemplate(w, "supplier_form.html", supplierFormData{
+			Supplier: s, IsEdit: true,
+		}); err != nil {
+			log.Printf("render supplier form: %v", err)
+		}
+	}
+}
+
+func updateSupplierHandler(db *sql.DB, tmpl *template.Template) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id, err := strconv.Atoi(r.PathValue("id"))
+		if err != nil {
+			http.NotFound(w, r)
+			return
+		}
+		if err := r.ParseForm(); err != nil {
+			http.Error(w, "bad form", http.StatusBadRequest)
+			return
+		}
+		name := strings.TrimSpace(r.FormValue("name"))
+		active := 0
+		if r.FormValue("active") == "1" {
+			active = 1
+		}
+		if name == "" {
+			tmpl.ExecuteTemplate(w, "supplier_form.html", supplierFormData{
+				Supplier: Supplier{
+					ID:            id,
+					Name:          name,
+					Phone:         strings.TrimSpace(r.FormValue("phone")),
+					ContactPerson: strings.TrimSpace(r.FormValue("contact_person")),
+					Address:       strings.TrimSpace(r.FormValue("address")),
+					Active:        active == 1,
+				},
+				IsEdit: true,
+				Error:  "Supplier name is required.",
+			})
+			return
+		}
+		_, err = db.ExecContext(r.Context(),
+			`UPDATE suppliers SET name=?, phone=?, contact_person=?, address=?, active=? WHERE id=?`,
+			name,
+			strings.TrimSpace(r.FormValue("phone")),
+			strings.TrimSpace(r.FormValue("contact_person")),
+			strings.TrimSpace(r.FormValue("address")),
+			active, id,
+		)
+		if err != nil {
+			log.Printf("update supplier: %v", err)
+			tmpl.ExecuteTemplate(w, "supplier_form.html", supplierFormData{
+				Supplier: Supplier{
+					ID:            id,
+					Name:          name,
+					Phone:         strings.TrimSpace(r.FormValue("phone")),
+					ContactPerson: strings.TrimSpace(r.FormValue("contact_person")),
+					Address:       strings.TrimSpace(r.FormValue("address")),
+					Active:        active == 1,
+				},
+				IsEdit: true,
+				Error:  "Failed to save changes.",
+			})
+			return
+		}
+		http.Redirect(w, r, "/suppliers", http.StatusSeeOther)
 	}
 }
 

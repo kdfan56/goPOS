@@ -57,7 +57,7 @@
 <div class="gp-content">
 <a href="/receiving" class="back">&larr; All sessions</a>
 <h1>{{.Label}}</h1>
-<div class="sub">Started {{.StartedAt}} · session #{{.ID}}</div>
+<div class="sub">Started {{.StartedAt}} · session #{{.ID}}{{if .SupplierName}} · {{.SupplierName}}{{end}}</div>
 
 {{if eq .Status "finalized"}}
 <div class="banner finalized-banner">&#10003; Finalized {{.FinalizedAt}} — these quantities were added to stock.</div>

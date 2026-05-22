@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>{{if .IsEdit}}Edit Supplier{{else}}Add Supplier{{end}} — goPOS</title>
+<style>
+  body {
+    margin: 0; background: #f2f3f3; color: #16191f;
+    font-family: "Amazon Ember", "Helvetica Neue", Roboto, Arial, sans-serif;
+  }
+  .gp-content { max-width: 600px; margin: 0 auto; padding: 1.5rem 1rem; }
+  h1 { margin: 0 0 1.25rem; font-size: 1.5rem; font-weight: 700; }
+  .breadcrumb { color: #5f6b7a; font-size: 0.875rem; margin-bottom: 0.5rem; }
+  .breadcrumb a { color: #0972d3; text-decoration: none; }
+  .breadcrumb a:hover { text-decoration: underline; }
+
+  form { background: #fff; border: 1px solid #d5dbdb; border-radius: 0; padding: 1.5rem; }
+  .field { margin-bottom: 1.25rem; }
+  .field label { display: block; font-weight: 700; margin-bottom: 0.3rem; }
+  .field input[type="text"] {
+    width: 100%; padding: 0.55rem 0.7rem; font-size: 1rem; font-family: inherit;
+    border: 1px solid #aab7b8; border-radius: 0; box-sizing: border-box;
+  }
+  .field input[type="text"]:focus { outline: 2px solid #0972d3; outline-offset: -1px; border-color: #0972d3; }
+  .field .hint { display: block; font-size: 0.85rem; color: #5f6b7a; margin-bottom: 0.4rem; }
+  .check-row { display: flex; align-items: center; gap: 0.5rem; }
+  .check-row input[type="checkbox"] { width: 1rem; height: 1rem; cursor: pointer; }
+  .check-row label { font-weight: 700; cursor: pointer; margin: 0; }
+
+  .error { background: #fdf3f1; color: #d91515; border: 1px solid #d91515; padding: 0.75rem; border-radius: 0; margin-bottom: 1.25rem; }
+
+  .actions { display: flex; gap: 0.5rem; margin-top: 1.5rem; }
+  .actions button.primary {
+    padding: 0.55rem 1.5rem; font-size: 0.95rem; border: 1px solid #ec7211; border-radius: 0;
+    cursor: pointer; font-weight: 700; background: #ec7211; color: #fff; font-family: inherit;
+  }
+  .actions button.primary:hover { background: #eb5f07; border-color: #eb5f07; }
+  .actions a.cancel {
+    padding: 0.55rem 1.5rem; font-size: 0.95rem; border: 1px solid #687078; border-radius: 0;
+    color: #16191f; text-decoration: none; background: #fff; font-weight: 700;
+  }
+  .actions a.cancel:hover { background: #f2f3f3; }
+</style>
+</head>
+<body>
+{{template "nav"}}
+<div class="gp-content">
+<div class="breadcrumb"><a href="/suppliers">← Suppliers</a></div>
+<h1>{{if .IsEdit}}Edit Supplier{{else}}Add Supplier{{end}}</h1>
+
+{{if .Error}}<div class="error">{{.Error}}</div>{{end}}
+
+<form method="post" action="{{if .IsEdit}}/suppliers/{{.Supplier.ID}}/edit{{else}}/suppliers/new{{end}}">
+  <div class="field">
+    <label for="name">Supplier name *</label>
+    <input id="name" name="name" type="text" value="{{.Supplier.Name}}" required autofocus>
+  </div>
+  <div class="field">
+    <label for="contact_person">Contact person</label>
+    <input id="contact_person" name="contact_person" type="text" value="{{.Supplier.ContactPerson}}">
+  </div>
+  <div class="field">
+    <label for="phone">Phone</label>
+    <input id="phone" name="phone" type="text" value="{{.Supplier.Phone}}">
+  </div>
+  <div class="field">
+    <label for="address">Address</label>
+    <input id="address" name="address" type="text" value="{{.Supplier.Address}}">
+  </div>
+  {{if .IsEdit}}
+  <div class="field">
+    <div class="check-row">
+      <input id="active" name="active" type="checkbox" value="1" {{if .Supplier.Active}}checked{{end}}>
+      <label for="active">Active (uncheck to hide from new receiving sessions)</label>
+    </div>
+  </div>
+  {{end}}
+  <div class="actions">
+    <button type="submit" class="primary">{{if .IsEdit}}Save changes{{else}}Add Supplier{{end}}</button>
+    <a class="cancel" href="/suppliers">Cancel</a>
+  </div>
+</form>
+</div>
+</body>
+</html>
