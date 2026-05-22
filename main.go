@@ -659,7 +659,13 @@ type dashboardData struct {
 	TodayCount   int
 	MonthLabel   string // e.g. "May 2026"
 	MonthSalesRs string
-	TopItems     []dashboardTopItem
+	LowStockCount int
+	TopItems      []dashboardTopItem
+	ReportDays    []DailySales
+	GrandCash     int
+	GrandCard     int
+	GrandTotal    int
+	GrandCount    int
 }
 
 // formatRupees renders a whole-rupee amount with thousands separators
@@ -753,13 +759,83 @@ func dashboardHandler(db *sql.DB, tmpl *template.Template) http.HandlerFunc {
 			top = append(top, it)
 		}
 
-		data := dashboardData{
-			TodaySalesRs: formatRupees(todayTotal),
-			TodayCount:   todayCount,
-			MonthLabel:   nowLocal.Format("Jan 2006"),
-			MonthSalesRs: formatRupees(monthTotal),
-			TopItems:     top,
+		var lowStockCount int
+		if err := db.QueryRow(
+			`SELECT COUNT(*) FROM products WHERE stock < ?`, lowStockThreshold,
+		).Scan(&lowStockCount); err != nil {
+			log.Printf("dashboard low stock query: %v", err)
+			http.Error(w, "failed to load dashboard", http.StatusInternalServerError)
+			return
 		}
+
+		// 7-day sales breakdown — same query as reportsHandler, same scaffold/merge pattern.
+		daysMap := make(map[string]*DailySales, 7)
+		orderedDays := make([]string, 0, 7)
+		for i := 0; i < 7; i++ {
+			d := today.AddDate(0, 0, -i)
+			iso := d.Format("2006-01-02")
+			orderedDays = append(orderedDays, iso)
+			var display string
+			switch i {
+			case 0:
+				display = "Today (" + d.Format("Mon 2 Jan") + ")"
+			case 1:
+				display = "Yesterday (" + d.Format("Mon 2 Jan") + ")"
+			default:
+				display = d.Format("Mon 2 Jan")
+			}
+			daysMap[iso] = &DailySales{Date: iso, Display: display, IsToday: i == 0}
+		}
+		reportRows, err := db.Query(`
+			SELECT date(created_at, '+5 hours') AS day,
+			       SUM(CASE WHEN payment_method = 'cash' THEN total_rupees ELSE 0 END),
+			       SUM(CASE WHEN payment_method = 'card' THEN total_rupees ELSE 0 END),
+			       SUM(total_rupees),
+			       COUNT(*)
+			FROM transactions
+			WHERE date(created_at, '+5 hours') >= date(?, '-6 days')
+			GROUP BY day
+		`, todayISO)
+		if err != nil {
+			log.Printf("dashboard report query: %v", err)
+			http.Error(w, "failed to load dashboard", http.StatusInternalServerError)
+			return
+		}
+		defer reportRows.Close()
+		for reportRows.Next() {
+			var day string
+			var cash, card, total, count int
+			if err := reportRows.Scan(&day, &cash, &card, &total, &count); err != nil {
+				log.Printf("dashboard report scan: %v", err)
+				http.Error(w, "failed to load dashboard", http.StatusInternalServerError)
+				return
+			}
+			if ds, ok := daysMap[day]; ok {
+				ds.CashRupees = cash
+				ds.CardRupees = card
+				ds.TotalRupees = total
+				ds.TxnCount = count
+			}
+		}
+		reportDays := make([]DailySales, 0, 7)
+		data := dashboardData{
+			TodaySalesRs:  formatRupees(todayTotal),
+			TodayCount:    todayCount,
+			MonthLabel:    nowLocal.Format("Jan 2006"),
+			MonthSalesRs:  formatRupees(monthTotal),
+			LowStockCount: lowStockCount,
+			TopItems:      top,
+		}
+		for _, iso := range orderedDays {
+			ds := *daysMap[iso]
+			reportDays = append(reportDays, ds)
+			data.GrandCash += ds.CashRupees
+			data.GrandCard += ds.CardRupees
+			data.GrandTotal += ds.TotalRupees
+			data.GrandCount += ds.TxnCount
+		}
+		data.ReportDays = reportDays
+
 		if err := tmpl.ExecuteTemplate(w, "dashboard.html", data); err != nil {
 			log.Printf("render dashboard: %v", err)
 		}

@@ -8,22 +8,55 @@
     margin: 0; background: #f2f3f3; color: #16191f;
     font-family: "Amazon Ember", "Helvetica Neue", Roboto, Arial, sans-serif;
   }
-  .gp-content { max-width: 960px; margin: 0 auto; padding: 1.5rem 1rem; }
+  .gp-content { max-width: 1100px; margin: 0 auto; padding: 1.5rem 1rem; }
   h1 { margin: 0 0 1.25rem; font-size: 1.5rem; font-weight: 700; }
-  h2 { font-size: 1.05rem; font-weight: 700; color: #16191f; margin: 2rem 0 0.75rem; }
-  .tiles { display: flex; gap: 1rem; flex-wrap: wrap; }
+
+  /* ── Summary tiles ── */
+  .tiles { display: flex; gap: 1rem; flex-wrap: wrap; margin-bottom: 1.25rem; }
   .tile {
-    background: #fff; border: 1px solid #d5dbdb;
-    border-radius: 0; padding: 1rem 1.25rem; flex: 1; min-width: 180px;
+    background: #fff; border: 1px solid #d5dbdb; border-radius: 0;
+    padding: 1rem 1.25rem; flex: 1; min-width: 160px;
   }
-  .tile .label { font-size: 0.8rem; color: #5f6b7a; }
-  .tile .value { font-size: 1.9rem; font-weight: 700; margin-top: 0.35rem; }
-  table { width: 100%; border-collapse: collapse; background: #fff; border: 1px solid #d5dbdb; border-radius: 0; overflow: hidden; }
-  th, td { padding: 0.7rem 1rem; text-align: left; border-bottom: 1px solid #e9ebed; font-size: 0.875rem; }
+  .tile .label { font-size: 0.8rem; color: #5f6b7a; font-weight: 700; text-transform: uppercase; letter-spacing: 0.4px; }
+  .tile .value { font-size: 1.9rem; font-weight: 700; margin-top: 0.35rem; line-height: 1.1; }
+  .tile .value.warn { color: #d91515; }
+  .tile .sub-link { display: block; margin-top: 0.4rem; font-size: 0.8rem; color: #0972d3; text-decoration: none; }
+  .tile .sub-link:hover { text-decoration: underline; }
+
+  /* ── Two-column panel row ── */
+  .panels {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 1rem;
+  }
+  @media (max-width: 720px) { .panels { grid-template-columns: 1fr; } }
+
+  .panel { background: #fff; border: 1px solid #d5dbdb; }
+  .panel-header {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 0.65rem 1rem;
+    background: #fafafa; border-bottom: 1px solid #d5dbdb;
+  }
+  .panel-header h2 { margin: 0; font-size: 0.95rem; font-weight: 700; color: #16191f; }
+  .panel-header a { font-size: 0.8rem; color: #0972d3; text-decoration: none; }
+  .panel-header a:hover { text-decoration: underline; }
+
+  table { width: 100%; border-collapse: collapse; }
+  th, td { padding: 0.6rem 1rem; text-align: left; border-bottom: 1px solid #e9ebed; font-size: 0.875rem; }
   th { background: #fafafa; color: #414d5c; font-weight: 700; border-bottom: 1px solid #d5dbdb; }
-  td.right, th.right { text-align: right; }
+  td.right, th.right { text-align: right; font-variant-numeric: tabular-nums; }
   tr:last-child td { border-bottom: none; }
-  .empty { color: #5f6b7a; }
+
+  tr.today-row { background: #f0f7ff; }
+  tr.today-row td:first-child { font-weight: 700; }
+  .today-badge {
+    display: inline-block; background: #0972d3; color: #fff; padding: 1px 6px;
+    font-size: 0.68rem; font-weight: 700; margin-left: 0.35rem;
+    vertical-align: middle; letter-spacing: 0.4px;
+  }
+  tfoot td { background: #fafafa; font-weight: 700; border-top: 2px solid #d5dbdb; border-bottom: none; }
+  .zero { color: #aab7b8; }
+  .empty { color: #5f6b7a; padding: 1rem; }
 </style>
 </head>
 <body>
@@ -44,31 +77,79 @@
       <div class="label">{{.MonthLabel}} Sale</div>
       <div class="value">Rs. {{.MonthSalesRs}}</div>
     </div>
+    <div class="tile">
+      <div class="label">Low Stock Items</div>
+      <div class="value {{if .LowStockCount}}warn{{end}}">{{.LowStockCount}}</div>
+      {{if .LowStockCount}}<a class="sub-link" href="/products?low=1">View low stock →</a>{{end}}
+    </div>
   </div>
 
-  <h2>Top sellers — last 7 days</h2>
-  {{if .TopItems}}
-  <table>
-    <thead>
-      <tr>
-        <th>Item</th>
-        <th class="right">Qty sold</th>
-        <th class="right">Revenue (Rs.)</th>
-      </tr>
-    </thead>
-    <tbody>
-      {{range .TopItems}}
-      <tr>
-        <td>{{.Name}}</td>
-        <td class="right">{{.Qty}}</td>
-        <td class="right">{{.RevenueRs}}</td>
-      </tr>
+  <div class="panels">
+
+    <div class="panel">
+      <div class="panel-header">
+        <h2>Top sellers — last 7 days</h2>
+      </div>
+      {{if .TopItems}}
+      <table>
+        <thead>
+          <tr>
+            <th>Item</th>
+            <th class="right">Qty</th>
+            <th class="right">Revenue (Rs.)</th>
+          </tr>
+        </thead>
+        <tbody>
+          {{range .TopItems}}
+          <tr>
+            <td>{{.Name}}</td>
+            <td class="right">{{.Qty}}</td>
+            <td class="right">{{.RevenueRs}}</td>
+          </tr>
+          {{end}}
+        </tbody>
+      </table>
+      {{else}}
+      <p class="empty">No sales in the last 7 days yet.</p>
       {{end}}
-    </tbody>
-  </table>
-  {{else}}
-  <p class="empty">No sales in the last 7 days yet.</p>
-  {{end}}
+    </div>
+
+    <div class="panel">
+      <div class="panel-header">
+        <h2>Sales — last 7 days</h2>
+        <a href="/reports">Full report →</a>
+      </div>
+      <table>
+        <thead>
+          <tr>
+            <th>Day</th>
+            <th class="right">Cash</th>
+            <th class="right">Card</th>
+            <th class="right">Total</th>
+          </tr>
+        </thead>
+        <tbody>
+          {{range .ReportDays}}
+          <tr{{if .IsToday}} class="today-row"{{end}}>
+            <td>{{.Display}}{{if .IsToday}}<span class="today-badge">TODAY</span>{{end}}</td>
+            <td class="right {{if not .CashRupees}}zero{{end}}">{{.CashRupees}}</td>
+            <td class="right {{if not .CardRupees}}zero{{end}}">{{.CardRupees}}</td>
+            <td class="right {{if not .TotalRupees}}zero{{end}}">{{.TotalRupees}}</td>
+          </tr>
+          {{end}}
+        </tbody>
+        <tfoot>
+          <tr>
+            <td>7-day total</td>
+            <td class="right">{{.GrandCash}}</td>
+            <td class="right">{{.GrandCard}}</td>
+            <td class="right">{{.GrandTotal}}</td>
+          </tr>
+        </tfoot>
+      </table>
+    </div>
+
+  </div>
 </div>
 </body>
 </html>
