@@ -4,50 +4,57 @@
 <meta charset="UTF-8">
 <title>{{.Label}} — Receiving — goPOS</title>
 <style>
-  body { font-family: system-ui, sans-serif; max-width: 900px; margin: 1.5rem auto; padding: 0 1rem; color: #222; }
-  h1 { margin: 0 0 0.25rem; font-size: 1.4rem; }
-  .sub { color: #777; font-size: 0.9rem; margin-bottom: 1rem; }
-  .back { color: #47a; text-decoration: none; font-size: 0.9rem; }
+  body {
+    margin: 0; background: #f2f3f3; color: #16191f;
+    font-family: "Amazon Ember", "Helvetica Neue", Roboto, Arial, sans-serif;
+  }
+  .gp-content { max-width: 900px; margin: 0 auto; padding: 1.5rem 1rem; }
+  h1 { margin: 0 0 0.25rem; font-size: 1.5rem; font-weight: 700; }
+  .sub { color: #5f6b7a; font-size: 0.875rem; margin-bottom: 1rem; }
+  .back { color: #0972d3; text-decoration: none; font-size: 0.875rem; }
   .back:hover { text-decoration: underline; }
 
-  .scan-row { display: flex; gap: 0.5rem; align-items: center; padding: 0.75rem; background: #f4f4f4; border-radius: 6px; }
-  .scan-row label { font-weight: 600; }
-  .scan-row input { flex: 1; padding: 0.5rem; font-size: 1.1rem; border: 1px solid #ccc; border-radius: 4px; }
+  .scan-row { display: flex; gap: 0.5rem; align-items: center; padding: 0.75rem; background: #fff; border: 1px solid #d5dbdb; border-radius: 0; }
+  .scan-row label { font-weight: 700; }
+  .scan-row input { flex: 1; padding: 0.5rem 0.7rem; font-size: 1.1rem; font-family: inherit; border: 1px solid #aab7b8; border-radius: 0; }
+  .scan-row input:focus { outline: 2px solid #0972d3; outline-offset: -1px; border-color: #0972d3; }
 
-  .msg { margin: 0.5rem 0; padding: 0.5rem; border-radius: 4px; min-height: 1.5rem; }
-  .msg.error { background: #ffe5e5; color: #b00; }
-  .msg.success { background: #e5ffe5; color: #0a0; }
+  .msg { margin: 0.5rem 0; padding: 0.5rem; border-radius: 0; min-height: 1.5rem; }
+  .msg.error { background: #fdf3f1; color: #d91515; }
+  .msg.success { background: #f2fcf3; color: #037f0c; }
 
-  table { width: 100%; border-collapse: collapse; margin: 1rem 0; }
-  th, td { padding: 0.5rem 0.75rem; text-align: left; border-bottom: 1px solid #eee; }
-  th { background: #fafafa; font-size: 0.85rem; color: #666; }
+  table { width: 100%; border-collapse: collapse; margin: 1rem 0; background: #fff; border: 1px solid #d5dbdb; border-radius: 0; overflow: hidden; }
+  th, td { padding: 0.7rem 1rem; text-align: left; border-bottom: 1px solid #e9ebed; font-size: 0.875rem; }
+  th { background: #fafafa; color: #414d5c; font-weight: 700; border-bottom: 1px solid #d5dbdb; }
   td.right, th.right { text-align: right; }
-  td.mono { font-family: 'Courier New', monospace; color: #777; font-size: 0.9rem; }
+  td.mono { color: #5f6b7a; font-size: 0.85rem; font-family: ui-monospace, "SF Mono", Menlo, monospace; }
   td.qty-cell { white-space: nowrap; }
-  .empty { color: #888; font-style: italic; text-align: center; padding: 1.5rem; }
+  .empty { color: #5f6b7a; text-align: center; padding: 1.5rem; }
 
-  .qty-btn, .void-btn { padding: 0.25rem 0.6rem; border: 1px solid #ccc; background: #fff; cursor: pointer; border-radius: 4px; font-size: 0.9rem; }
-  .qty-btn:hover { background: #f0f0f0; }
-  .void-btn { color: #b00; border-color: #f5b8b8; }
-  .void-btn:hover { background: #ffe5e5; }
-  .qty { display: inline-block; min-width: 2.5rem; text-align: center; font-weight: 600; }
+  .qty-btn, .void-btn { padding: 0.25rem 0.6rem; border: 1px solid #aab7b8; background: #fff; cursor: pointer; border-radius: 0; font-size: 0.9rem; font-family: inherit; }
+  .qty-btn:hover { background: #f2f3f3; }
+  .void-btn { color: #d91515; border-color: #f0b3b3; }
+  .void-btn:hover { background: #fdf3f1; }
+  .qty { display: inline-block; min-width: 2.5rem; text-align: center; font-weight: 700; }
 
-  .totals { padding: 1rem; background: #f4f4f4; border-radius: 6px; display: flex; justify-content: space-between; align-items: center; }
+  .totals { padding: 1rem; background: #fff; border: 1px solid #d5dbdb; border-radius: 0; display: flex; justify-content: space-between; align-items: center; }
   .totals .grand { font-size: 1.6rem; font-weight: 700; }
 
   .footer-actions { margin-top: 1.5rem; display: flex; justify-content: space-between; gap: 1rem; }
-  .delete-btn { padding: 0.55rem 1rem; background: #fff; color: #b00; border: 1px solid #f5b8b8; border-radius: 4px; font-weight: 600; cursor: pointer; }
-  .delete-btn:hover { background: #ffe5e5; }
-  .finalize-btn { padding: 0.55rem 1.2rem; background: #4a7; color: #fff; border: none; border-radius: 4px; font-weight: 600; font-size: 1rem; cursor: pointer; }
-  .finalize-btn:hover { background: #386; }
+  .delete-btn { padding: 0.55rem 1.25rem; background: #fff; color: #d91515; border: 1px solid #d91515; border-radius: 0; font-weight: 700; cursor: pointer; font-family: inherit; }
+  .delete-btn:hover { background: #fdf3f1; }
+  .finalize-btn { padding: 0.55rem 1.4rem; background: #ec7211; color: #fff; border: 1px solid #ec7211; border-radius: 0; font-weight: 700; font-size: 0.95rem; cursor: pointer; font-family: inherit; }
+  .finalize-btn:hover { background: #eb5f07; border-color: #eb5f07; }
   .finalize-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 
-  .banner { padding: 0.75rem 1rem; border-radius: 6px; margin-bottom: 1rem; }
-  .finalized-banner { background: #e5ffe5; color: #060; border: 1px solid #b8e0b8; font-weight: 600; }
-  .error-banner { background: #ffe5e5; color: #b00; border: 1px solid #f5b8b8; }
+  .banner { padding: 0.75rem 1rem; border-radius: 0; margin-bottom: 1rem; }
+  .finalized-banner { background: #f2fcf3; color: #037f0c; border: 1px solid #6fcf7f; font-weight: 700; }
+  .error-banner { background: #fdf3f1; color: #d91515; border: 1px solid #d91515; }
 </style>
 </head>
 <body>
+{{template "nav"}}
+<div class="gp-content">
 <a href="/receiving" class="back">&larr; All sessions</a>
 <h1>{{.Label}}</h1>
 <div class="sub">Started {{.StartedAt}} · session #{{.ID}}</div>
@@ -98,6 +105,7 @@
   </form>
 </div>
 {{end}}
+</div>
 
 <script>
 const sessionId = {{.ID}};

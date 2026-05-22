@@ -23,7 +23,13 @@
 
   .footer { text-align: center; margin-top: 0.75rem; padding-top: 0.5rem; border-top: 1px dashed #000; }
   .no-print { margin-top: 1.5rem; text-align: center; }
-  .no-print button { padding: 0.4rem 1rem; margin: 0 0.25rem; cursor: pointer; }
+  .no-print button {
+    padding: 0.5rem 1.25rem; margin: 0 0.25rem; cursor: pointer; font-weight: 700;
+    font-family: "Amazon Ember", "Helvetica Neue", Roboto, Arial, sans-serif;
+    border-radius: 0;
+  }
+  .no-print button:first-child { background: #ec7211; color: #fff; border: 1px solid #ec7211; }
+  .no-print button:last-child { background: #fff; color: #16191f; border: 1px solid #687078; }
   @media print { .no-print { display: none; } body { max-width: none; padding: 0; } }
 </style>
 </head>

@@ -1,0 +1,62 @@
+{{define "navStyles"}}
+<style>
+  /* Contract: the page using a nav must set body{margin:0} and wrap its own
+     content (e.g. .gp-content) so the bar can span full width. Styles live here
+     so nav markup and its look travel together. Shared by both nav variants. */
+  .gp-nav {
+    background: #232f3e;
+    font-family: "Amazon Ember", "Helvetica Neue", Roboto, Arial, sans-serif;
+    display: flex; align-items: center; gap: 1.5rem;
+    padding: 0 1.25rem; height: 48px;
+  }
+  .gp-nav .gp-brand {
+    color: #ff9900; font-weight: 700; letter-spacing: 0.3px; margin-right: 0.5rem;
+  }
+  .gp-nav a {
+    color: #d5dbdb; text-decoration: none; font-size: 0.875rem; font-weight: 700;
+    height: 48px; display: flex; align-items: center;
+    border-bottom: 3px solid transparent;
+  }
+  .gp-nav a:hover { color: #fff; }
+  .gp-nav a.active { color: #fff; border-bottom-color: #ff9900; }
+</style>
+{{end}}
+
+{{define "navScript"}}
+<script>
+  // Highlight the link for the current page. Prefix match (not exact) so deep
+  // pages like /receiving/5 still light up "Receiving"; the '/' guard stops the
+  // Dashboard link matching everything.
+  (function () {
+    var path = window.location.pathname;
+    document.querySelectorAll('.gp-nav a').forEach(function (a) {
+      var href = a.getAttribute('href');
+      var active = href === path || (href !== '/' && path.indexOf(href) === 0);
+      if (active) a.classList.add('active');
+    });
+  })();
+</script>
+{{end}}
+
+{{define "nav"}}
+{{template "navStyles"}}
+<nav class="gp-nav">
+  <span class="gp-brand">goPOS</span>
+  <a href="/">Dashboard</a>
+  <a href="/products">Products</a>
+  <a href="/receiving">Receiving</a>
+  <a href="/reports">Reports</a>
+  <a href="/scan">Stock Scan</a>
+</nav>
+{{template "navScript"}}
+{{end}}
+
+{{define "navCashier"}}
+{{template "navStyles"}}
+<nav class="gp-nav">
+  <span class="gp-brand">goPOS</span>
+  <a href="/pos">POS</a>
+  <a href="/price-check">Price Check</a>
+</nav>
+{{template "navScript"}}
+{{end}}

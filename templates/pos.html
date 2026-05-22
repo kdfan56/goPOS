@@ -4,44 +4,53 @@
 <meta charset="UTF-8">
 <title>POS — goPOS</title>
 <style>
-  body { font-family: system-ui, sans-serif; max-width: 900px; margin: 1rem auto; padding: 0 1rem; color: #222; }
-  h1 { margin: 0 0 1rem; font-size: 1.5rem; }
+  body {
+    margin: 0; background: #f2f3f3; color: #16191f;
+    font-family: "Amazon Ember", "Helvetica Neue", Roboto, Arial, sans-serif;
+  }
+  .gp-content { max-width: 900px; margin: 0 auto; padding: 1rem; }
+  h1 { margin: 0 0 1rem; font-size: 1.5rem; font-weight: 700; }
 
-  .scan-row { display: flex; gap: 0.5rem; align-items: center; padding: 0.75rem; background: #f4f4f4; border-radius: 6px; }
-  .scan-row label { font-weight: 600; }
-  .scan-row input { flex: 1; padding: 0.5rem; font-size: 1.1rem; border: 1px solid #ccc; border-radius: 4px; }
+  .scan-row { display: flex; gap: 0.5rem; align-items: center; padding: 0.75rem; background: #fff; border: 1px solid #d5dbdb; border-radius: 0; }
+  .scan-row label { font-weight: 700; }
+  .scan-row input { flex: 1; padding: 0.5rem 0.7rem; font-size: 1.1rem; font-family: inherit; border: 1px solid #aab7b8; border-radius: 0; }
+  .scan-row input:focus { outline: 2px solid #0972d3; outline-offset: -1px; border-color: #0972d3; }
 
-  .msg { margin: 0.5rem 0; padding: 0.5rem; border-radius: 4px; min-height: 1.5rem; }
-  .msg.error { background: #ffe5e5; color: #b00; }
-  .msg.success { background: #e5ffe5; color: #0a0; }
+  .msg { margin: 0.5rem 0; padding: 0.5rem; border-radius: 0; min-height: 1.5rem; }
+  .msg.error { background: #fdf3f1; color: #d91515; }
+  .msg.success { background: #f2fcf3; color: #037f0c; }
 
-  table.cart { width: 100%; border-collapse: collapse; margin: 1rem 0; }
-  table.cart th, table.cart td { padding: 0.5rem 0.75rem; text-align: left; border-bottom: 1px solid #eee; }
-  table.cart th { background: #fafafa; font-size: 0.85rem; color: #666; }
+  table.cart { width: 100%; border-collapse: collapse; margin: 1rem 0; background: #fff; border: 1px solid #d5dbdb; border-radius: 0; overflow: hidden; }
+  table.cart th, table.cart td { padding: 0.7rem 1rem; text-align: left; border-bottom: 1px solid #e9ebed; }
+  table.cart th { background: #fafafa; color: #414d5c; font-weight: 700; border-bottom: 1px solid #d5dbdb; font-size: 0.8rem; }
   table.cart td.right { text-align: right; }
   table.cart td.actions { text-align: center; }
 
-  .qty-btn, .void-btn { padding: 0.25rem 0.6rem; border: 1px solid #ccc; background: #fff; cursor: pointer; border-radius: 4px; font-size: 0.9rem; }
-  .qty-btn:hover { background: #f0f0f0; }
-  .void-btn { color: #b00; border-color: #f5b8b8; }
-  .void-btn:hover { background: #ffe5e5; }
-  .qty { display: inline-block; min-width: 2rem; text-align: center; font-weight: 600; }
+  .qty-btn, .void-btn { padding: 0.25rem 0.6rem; border: 1px solid #aab7b8; background: #fff; cursor: pointer; border-radius: 0; font-size: 0.9rem; font-family: inherit; }
+  .qty-btn:hover { background: #f2f3f3; }
+  .void-btn { color: #d91515; border-color: #f0b3b3; }
+  .void-btn:hover { background: #fdf3f1; }
+  .qty { display: inline-block; min-width: 2rem; text-align: center; font-weight: 700; }
 
-  .totals { padding: 1rem; background: #f4f4f4; border-radius: 6px; display: flex; justify-content: space-between; align-items: center; }
+  .totals { padding: 1rem; background: #fff; border: 1px solid #d5dbdb; border-radius: 0; display: flex; justify-content: space-between; align-items: center; }
   .totals .summary { font-size: 1.2rem; }
-  .totals .grand { font-size: 1.8rem; font-weight: 700; color: #000; }
+  .totals .grand { font-size: 1.8rem; font-weight: 700; color: #16191f; }
 
   .pay-row { display: flex; gap: 0.5rem; margin-top: 1rem; }
-  .pay-btn { flex: 1; padding: 1rem; font-size: 1.1rem; font-weight: 600; border: none; border-radius: 6px; cursor: pointer; color: white; }
-  .pay-btn.cash { background: #4a7; }
-  .pay-btn.card { background: #47a; }
+  .pay-btn { flex: 1; padding: 1rem; font-size: 1.1rem; font-weight: 700; font-family: inherit; border: 1px solid transparent; border-radius: 0; cursor: pointer; color: #fff; }
+  .pay-btn.cash { background: #ec7211; border-color: #ec7211; }
+  .pay-btn.cash:hover:not(:disabled) { background: #eb5f07; }
+  .pay-btn.card { background: #fff; color: #16191f; border-color: #687078; }
+  .pay-btn.card:hover:not(:disabled) { background: #f2f3f3; }
   .pay-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 
-  .empty-cart { color: #888; text-align: center; padding: 2rem; font-style: italic; }
+  .empty-cart { color: #5f6b7a; text-align: center; padding: 2rem; font-style: italic; }
 </style>
 </head>
 <body>
-<h1>goPOS — Sale</h1>
+{{template "navCashier"}}
+<div class="gp-content">
+<h1>Sale</h1>
 
 <div class="scan-row">
   <label for="barcode">Scan:</label>
@@ -60,6 +69,7 @@
 <div class="pay-row">
   <button class="pay-btn cash" id="pay-cash" disabled>Cash</button>
   <button class="pay-btn card" id="pay-card" disabled>Card</button>
+</div>
 </div>
 
 <script>

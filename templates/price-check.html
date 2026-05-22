@@ -6,16 +6,16 @@
 <title>Price Check — goPOS</title>
 <style>
   * { box-sizing: border-box; }
-  body { font-family: system-ui, sans-serif; margin: 0; padding: 0; color: #222; background: #fafafa; min-height: 100vh; }
-
-  header { background: #222; color: #fff; padding: 0.75rem 1rem; }
-  header h1 { margin: 0; font-size: 1.1rem; font-weight: 600; letter-spacing: 0.5px; }
+  body {
+    margin: 0; padding: 0; min-height: 100vh; background: #f2f3f3; color: #16191f;
+    font-family: "Amazon Ember", "Helvetica Neue", Roboto, Arial, sans-serif;
+  }
 
   .wrap { max-width: 500px; margin: 0 auto; padding: 1rem; }
 
   .video-frame {
     position: relative; width: 100%; aspect-ratio: 4/3;
-    background: #000; border-radius: 8px; overflow: hidden;
+    background: #000; border-radius: 0; overflow: hidden;
     display: flex; align-items: center; justify-content: center;
   }
   .video-frame video { width: 100%; height: 100%; object-fit: cover; }
@@ -27,34 +27,36 @@
     pointer-events: none;
   }
 
-  .status { margin: 0.75rem 0; padding: 0.5rem 0.75rem; border-radius: 6px; font-size: 0.9rem; min-height: 1.5rem; }
-  .status.idle { background: #eef; color: #335; }
-  .status.error { background: #fee; color: #b00; }
-  .status.ok { background: #efe; color: #060; }
+  .status { margin: 0.75rem 0; padding: 0.5rem 0.75rem; border-radius: 0; font-size: 0.9rem; min-height: 1.5rem; }
+  .status.idle { background: #fff; color: #5f6b7a; border: 1px solid #d5dbdb; }
+  .status.error { background: #fdf3f1; color: #d91515; }
+  .status.ok { background: #f2fcf3; color: #037f0c; }
 
-  .manual { background: #fff; border: 1px solid #ddd; border-radius: 8px; padding: 0.75rem; margin-top: 1rem; }
-  .manual label { font-size: 0.85rem; color: #555; display: block; margin-bottom: 0.4rem; }
+  .manual { background: #fff; border: 1px solid #d5dbdb; border-radius: 0; padding: 0.75rem; margin-top: 1rem; }
+  .manual label { font-size: 0.85rem; color: #5f6b7a; display: block; margin-bottom: 0.4rem; }
   .manual-row { display: flex; gap: 0.5rem; }
-  .manual input { flex: 1; padding: 0.6rem; font-size: 1rem; border: 1px solid #ccc; border-radius: 4px; }
-  .manual button { padding: 0.6rem 1rem; font-size: 1rem; background: #47a; color: white; border: none; border-radius: 4px; cursor: pointer; }
+  .manual input { flex: 1; padding: 0.55rem 0.7rem; font-size: 1rem; font-family: inherit; border: 1px solid #aab7b8; border-radius: 0; }
+  .manual button { padding: 0.55rem 1.1rem; font-size: 0.95rem; font-family: inherit; background: #fff; color: #16191f; border: 1px solid #687078; border-radius: 0; cursor: pointer; font-weight: 700; }
+  .manual button:hover { background: #f2f3f3; }
 
   .result {
-    display: none; background: #fff; border-radius: 12px; padding: 1.5rem;
-    box-shadow: 0 2px 12px rgba(0,0,0,0.08); margin-top: 1rem; text-align: center;
+    display: none; background: #fff; border: 1px solid #d5dbdb; border-radius: 0; padding: 1.5rem;
+    margin-top: 1rem; text-align: center;
   }
   .result.show { display: block; }
   .result .name { font-size: 1.5rem; font-weight: 700; margin-bottom: 0.5rem; }
-  .result .price { font-size: 2.6rem; font-weight: 700; color: #060; }
+  .result .price { font-size: 2.6rem; font-weight: 700; color: #16191f; }
   .again-btn {
-    width: 100%; padding: 0.9rem; margin-top: 1.25rem; font-size: 1.1rem;
-    background: #4a7; color: white; border: none; border-radius: 6px; cursor: pointer; font-weight: 600;
+    width: 100%; padding: 0.75rem; margin-top: 1.25rem; font-size: 1rem; font-family: inherit;
+    background: #ec7211; color: #fff; border: 1px solid #ec7211; border-radius: 0; cursor: pointer; font-weight: 700;
   }
-  .notfound { border-left: 4px solid #b40; }
-  .notfound .name { color: #b40; }
+  .again-btn:hover { background: #eb5f07; border-color: #eb5f07; }
+  .notfound { border-left: 4px solid #d91515; }
+  .notfound .name { color: #d91515; }
 </style>
 </head>
 <body>
-<header><h1>goPOS — Price Check</h1></header>
+{{template "navCashier"}}
 
 <div class="wrap">
   <div class="video-frame">

@@ -4,34 +4,36 @@
 <meta charset="UTF-8">
 <title>Receiving — goPOS</title>
 <style>
-  body { font-family: system-ui, sans-serif; max-width: 900px; margin: 2rem auto; padding: 0 1rem; color: #222; }
-  h1 { margin: 0; }
-  .header-row { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem; gap: 1rem; }
-  .nav-btn { padding: 0.55rem 1rem; border-radius: 4px; text-decoration: none; font-weight: 600; white-space: nowrap; font-size: 0.95rem; background: #47a; color: white; }
-  .nav-btn:hover { background: #356; }
+  body {
+    margin: 0; background: #f2f3f3; color: #16191f;
+    font-family: "Amazon Ember", "Helvetica Neue", Roboto, Arial, sans-serif;
+  }
+  .gp-content { max-width: 900px; margin: 0 auto; padding: 1.5rem 1rem; }
+  h1 { margin: 0 0 1rem; font-size: 1.5rem; font-weight: 700; }
 
-  .start-box { background: #f4f4f4; border-radius: 6px; padding: 1rem; margin-bottom: 1.5rem; }
-  .start-box label { font-weight: 600; display: block; margin-bottom: 0.4rem; }
+  .start-box { background: #fff; border: 1px solid #d5dbdb; border-radius: 0; padding: 1rem; margin-bottom: 1.5rem; }
+  .start-box label { font-weight: 700; display: block; margin-bottom: 0.4rem; }
   .start-row { display: flex; gap: 0.5rem; }
-  .start-row input { flex: 1; padding: 0.6rem; font-size: 1rem; border: 1px solid #ccc; border-radius: 4px; }
-  .start-row button { padding: 0.6rem 1.2rem; font-size: 1rem; font-weight: 600; background: #4a7; color: white; border: none; border-radius: 4px; cursor: pointer; }
-  .start-row button:hover { background: #386; }
+  .start-row input { flex: 1; padding: 0.55rem 0.7rem; font-size: 1rem; font-family: inherit; border: 1px solid #aab7b8; border-radius: 0; }
+  .start-row input:focus { outline: 2px solid #0972d3; outline-offset: -1px; border-color: #0972d3; }
+  .start-row button { padding: 0.55rem 1.4rem; font-size: 0.95rem; font-weight: 700; font-family: inherit; background: #ec7211; color: #fff; border: 1px solid #ec7211; border-radius: 0; cursor: pointer; }
+  .start-row button:hover { background: #eb5f07; border-color: #eb5f07; }
 
-  .banner { padding: 0.75rem 1rem; border-radius: 6px; margin-bottom: 1rem; }
-  .error-banner { background: #ffe5e5; color: #b00; border: 1px solid #f5b8b8; }
+  .banner { padding: 0.75rem 1rem; border-radius: 0; margin-bottom: 1rem; }
+  .error-banner { background: #fdf3f1; color: #d91515; border: 1px solid #d91515; }
 
-  table { width: 100%; border-collapse: collapse; }
-  th, td { padding: 0.5rem 0.75rem; text-align: left; border-bottom: 1px solid #ddd; }
-  th { background: #f4f4f4; }
+  table { width: 100%; border-collapse: collapse; background: #fff; border: 1px solid #d5dbdb; }
+  th, td { padding: 0.7rem 1rem; text-align: left; border-bottom: 1px solid #e9ebed; font-size: 0.875rem; }
+  th { background: #fafafa; color: #414d5c; font-weight: 700; border-bottom: 1px solid #d5dbdb; }
   td.right, th.right { text-align: right; }
-  .empty { color: #888; font-style: italic; }
+  tr:last-child td { border-bottom: none; }
+  .empty { color: #5f6b7a; }
 </style>
 </head>
 <body>
-<div class="header-row">
-  <h1>Receiving — active sessions ({{len .Sessions}})</h1>
-  <a href="/products" class="nav-btn">Products</a>
-</div>
+{{template "nav"}}
+<div class="gp-content">
+<h1>Receiving — active sessions ({{len .Sessions}})</h1>
 
 {{if .Error}}
 <div class="banner error-banner">{{.Error}}</div>
@@ -72,5 +74,6 @@
 {{else}}
 <p class="empty">No active sessions. Start one above when a shipment arrives.</p>
 {{end}}
+</div>
 </body>
 </html>

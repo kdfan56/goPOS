@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Dashboard — goPOS</title>
+<style>
+  body {
+    margin: 0; background: #f2f3f3; color: #16191f;
+    font-family: "Amazon Ember", "Helvetica Neue", Roboto, Arial, sans-serif;
+  }
+  .gp-content { max-width: 960px; margin: 0 auto; padding: 1.5rem 1rem; }
+  h1 { margin: 0 0 1.25rem; font-size: 1.5rem; font-weight: 700; }
+  h2 { font-size: 1.05rem; font-weight: 700; color: #16191f; margin: 2rem 0 0.75rem; }
+  .tiles { display: flex; gap: 1rem; flex-wrap: wrap; }
+  .tile {
+    background: #fff; border: 1px solid #d5dbdb;
+    border-radius: 0; padding: 1rem 1.25rem; flex: 1; min-width: 180px;
+  }
+  .tile .label { font-size: 0.8rem; color: #5f6b7a; }
+  .tile .value { font-size: 1.9rem; font-weight: 700; margin-top: 0.35rem; }
+  table { width: 100%; border-collapse: collapse; background: #fff; border: 1px solid #d5dbdb; border-radius: 0; overflow: hidden; }
+  th, td { padding: 0.7rem 1rem; text-align: left; border-bottom: 1px solid #e9ebed; font-size: 0.875rem; }
+  th { background: #fafafa; color: #414d5c; font-weight: 700; border-bottom: 1px solid #d5dbdb; }
+  td.right, th.right { text-align: right; }
+  tr:last-child td { border-bottom: none; }
+  .empty { color: #5f6b7a; }
+</style>
+</head>
+<body>
+{{template "nav"}}
+<div class="gp-content">
+  <h1>Dashboard</h1>
+
+  <div class="tiles">
+    <div class="tile">
+      <div class="label">Today's Sale</div>
+      <div class="value">Rs. {{.TodaySalesRs}}</div>
+    </div>
+    <div class="tile">
+      <div class="label">Today's Transactions</div>
+      <div class="value">{{.TodayCount}}</div>
+    </div>
+    <div class="tile">
+      <div class="label">{{.MonthLabel}} Sale</div>
+      <div class="value">Rs. {{.MonthSalesRs}}</div>
+    </div>
+  </div>
+
+  <h2>Top sellers — last 7 days</h2>
+  {{if .TopItems}}
+  <table>
+    <thead>
+      <tr>
+        <th>Item</th>
+        <th class="right">Qty sold</th>
+        <th class="right">Revenue (Rs.)</th>
+      </tr>
+    </thead>
+    <tbody>
+      {{range .TopItems}}
+      <tr>
+        <td>{{.Name}}</td>
+        <td class="right">{{.Qty}}</td>
+        <td class="right">{{.RevenueRs}}</td>
+      </tr>
+      {{end}}
+    </tbody>
+  </table>
+  {{else}}
+  <p class="empty">No sales in the last 7 days yet.</p>
+  {{end}}
+</div>
+</body>
+</html>

@@ -6,16 +6,16 @@
 <title>Scan — goPOS</title>
 <style>
   * { box-sizing: border-box; }
-  body { font-family: system-ui, sans-serif; margin: 0; padding: 0; color: #222; background: #fafafa; min-height: 100vh; }
-
-  header { background: #222; color: #fff; padding: 0.75rem 1rem; }
-  header h1 { margin: 0; font-size: 1.1rem; font-weight: 600; letter-spacing: 0.5px; }
+  body {
+    margin: 0; padding: 0; min-height: 100vh; background: #f2f3f3; color: #16191f;
+    font-family: "Amazon Ember", "Helvetica Neue", Roboto, Arial, sans-serif;
+  }
 
   .wrap { max-width: 500px; margin: 0 auto; padding: 1rem; }
 
   .video-frame {
     position: relative; width: 100%; aspect-ratio: 4/3;
-    background: #000; border-radius: 8px; overflow: hidden;
+    background: #000; border-radius: 0; overflow: hidden;
     display: flex; align-items: center; justify-content: center;
   }
   .video-frame video { width: 100%; height: 100%; object-fit: cover; }
@@ -27,75 +27,79 @@
     pointer-events: none;
   }
 
-  .status { margin: 0.75rem 0; padding: 0.5rem 0.75rem; border-radius: 6px; font-size: 0.9rem; min-height: 1.5rem; }
-  .status.idle { background: #eef; color: #335; }
-  .status.error { background: #fee; color: #b00; }
-  .status.ok { background: #efe; color: #060; }
+  .status { margin: 0.75rem 0; padding: 0.5rem 0.75rem; border-radius: 0; font-size: 0.9rem; min-height: 1.5rem; }
+  .status.idle { background: #fff; color: #5f6b7a; border: 1px solid #d5dbdb; }
+  .status.error { background: #fdf3f1; color: #d91515; }
+  .status.ok { background: #f2fcf3; color: #037f0c; }
 
-  .manual { background: #fff; border: 1px solid #ddd; border-radius: 8px; padding: 0.75rem; margin-top: 1rem; }
-  .manual label { font-size: 0.85rem; color: #555; display: block; margin-bottom: 0.4rem; }
+  .manual { background: #fff; border: 1px solid #d5dbdb; border-radius: 0; padding: 0.75rem; margin-top: 1rem; }
+  .manual label { font-size: 0.85rem; color: #5f6b7a; display: block; margin-bottom: 0.4rem; }
   .manual-row { display: flex; gap: 0.5rem; }
-  .manual input { flex: 1; padding: 0.6rem; font-size: 1rem; border: 1px solid #ccc; border-radius: 4px; }
-  .manual button { padding: 0.6rem 1rem; font-size: 1rem; background: #47a; color: white; border: none; border-radius: 4px; cursor: pointer; }
+  .manual input { flex: 1; padding: 0.55rem 0.7rem; font-size: 1rem; font-family: inherit; border: 1px solid #aab7b8; border-radius: 0; }
+  .manual button { padding: 0.55rem 1.1rem; font-size: 0.95rem; font-family: inherit; background: #fff; color: #16191f; border: 1px solid #687078; border-radius: 0; cursor: pointer; font-weight: 700; }
+  .manual button:hover { background: #f2f3f3; }
 
   .result {
-    display: none; background: #fff; border-radius: 12px; padding: 1.25rem;
-    box-shadow: 0 2px 12px rgba(0,0,0,0.08); margin-top: 1rem;
+    display: none; background: #fff; border: 1px solid #d5dbdb; border-radius: 0; padding: 1.25rem;
+    margin-top: 1rem;
   }
   .result.show { display: block; }
   .result .name { font-size: 1.4rem; font-weight: 700; margin-bottom: 0.5rem; }
-  .result .barcode { font-family: 'Courier New', monospace; color: #777; font-size: 0.85rem; margin-bottom: 1rem; }
-  .result .row { display: flex; justify-content: space-between; padding: 0.5rem 0; border-top: 1px solid #eee; font-size: 1.1rem; }
-  .result .price { font-size: 1.6rem; font-weight: 700; color: #060; }
-  .stock.low  { color: #d80; }
-  .stock.out  { color: #b00; font-weight: 700; }
-  .stock.fine { color: #060; }
+  .result .barcode { color: #5f6b7a; font-size: 0.85rem; margin-bottom: 1rem; font-family: ui-monospace, "SF Mono", Menlo, monospace; }
+  .result .row { display: flex; justify-content: space-between; padding: 0.5rem 0; border-top: 1px solid #e9ebed; font-size: 1.1rem; }
+  .result .price { font-size: 1.6rem; font-weight: 700; color: #16191f; }
+  .stock.low  { color: #8d6605; }
+  .stock.out  { color: #d91515; font-weight: 700; }
+  .stock.fine { color: #037f0c; }
   .adjust-controls { display: flex; gap: 0.4rem; align-items: center; }
   .adjust-controls input {
-    width: 5rem; padding: 0.4rem; font-size: 1rem;
-    border: 1px solid #ccc; border-radius: 4px; text-align: right;
+    width: 5rem; padding: 0.4rem 0.5rem; font-size: 1rem; font-family: inherit;
+    border: 1px solid #aab7b8; border-radius: 0; text-align: right;
   }
   .adjust-controls button {
-    padding: 0.45rem 0.9rem; font-size: 0.95rem;
-    background: #47a; color: white; border: none; border-radius: 4px; cursor: pointer;
+    padding: 0.45rem 1rem; font-size: 0.9rem; font-family: inherit; font-weight: 700;
+    background: #fff; color: #16191f; border: 1px solid #687078; border-radius: 0; cursor: pointer;
   }
+  .adjust-controls button:hover:not(:disabled) { background: #f2f3f3; }
   .adjust-controls button:disabled { opacity: 0.5; cursor: not-allowed; }
   .again-btn {
-    width: 100%; padding: 0.9rem; margin-top: 1rem; font-size: 1.1rem;
-    background: #4a7; color: white; border: none; border-radius: 6px; cursor: pointer; font-weight: 600;
+    width: 100%; padding: 0.7rem; margin-top: 1rem; font-size: 1rem; font-family: inherit;
+    background: #ec7211; color: #fff; border: 1px solid #ec7211; border-radius: 0; cursor: pointer; font-weight: 700;
   }
-  .notfound { border-left: 4px solid #b40; }
-  .notfound .name { color: #b40; }
+  .again-btn:hover { background: #eb5f07; border-color: #eb5f07; }
+  .notfound { border-left: 4px solid #d91515; }
+  .notfound .name { color: #d91515; }
   .add-product-btn {
-    display: block; width: 100%; padding: 0.9rem; margin-top: 1rem; font-size: 1.1rem;
-    background: #47a; color: white; border: none; border-radius: 6px; cursor: pointer;
-    font-weight: 600; text-align: center; text-decoration: none; box-sizing: border-box;
+    display: block; width: 100%; padding: 0.7rem; margin-top: 1rem; font-size: 1rem;
+    background: #ec7211; color: #fff; border: 1px solid #ec7211; border-radius: 0; cursor: pointer;
+    font-weight: 700; text-align: center; text-decoration: none; box-sizing: border-box;
   }
+  .add-product-btn:hover { background: #eb5f07; border-color: #eb5f07; }
 
   /* Recent additions block — only visible when a product is shown. Receivers use
      this to check whether the current stock total already includes the pile in
      front of them, or whether their shipment is genuinely new. */
   .movements-header {
     display: flex; justify-content: space-between; align-items: baseline;
-    padding-top: 0.9rem; margin-top: 0.5rem; border-top: 1px solid #eee;
-    font-size: 0.9rem; color: #555;
+    padding-top: 0.9rem; margin-top: 0.5rem; border-top: 1px solid #e9ebed;
+    font-size: 0.9rem; color: #5f6b7a;
   }
-  .movements-header .muted { color: #999; font-size: 0.8rem; }
+  .movements-header .muted { color: #aab7b8; font-size: 0.8rem; }
   .movements-empty {
-    color: #999; font-style: italic; font-size: 0.85rem; padding: 0.5rem 0;
+    color: #5f6b7a; font-style: italic; font-size: 0.85rem; padding: 0.5rem 0;
   }
   .movement-row {
     display: flex; align-items: baseline; gap: 0.5rem;
-    padding: 0.35rem 0; border-top: 1px dashed #f0f0f0; font-size: 0.95rem;
+    padding: 0.35rem 0; border-top: 1px dashed #e9ebed; font-size: 0.95rem;
   }
   .movement-row:first-child { border-top: none; }
-  .movement-delta { font-weight: 700; color: #060; min-width: 3rem; }
-  .movement-reason { color: #777; font-size: 0.8rem; flex: 1; }
-  .movement-time { color: #888; font-size: 0.85rem; white-space: nowrap; }
+  .movement-delta { font-weight: 700; color: #037f0c; min-width: 3rem; }
+  .movement-reason { color: #5f6b7a; font-size: 0.8rem; flex: 1; }
+  .movement-time { color: #5f6b7a; font-size: 0.85rem; white-space: nowrap; }
 </style>
 </head>
 <body>
-<header><h1>goPOS — Inventory Scan</h1></header>
+{{template "nav"}}
 
 <div class="wrap">
   <div class="video-frame">

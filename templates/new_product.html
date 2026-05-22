@@ -4,37 +4,44 @@
 <meta charset="UTF-8">
 <title>Add Product — goPOS</title>
 <style>
-  body { font-family: system-ui, sans-serif; max-width: 600px; margin: 2rem auto; padding: 0 1rem; color: #222; }
-  h1 { margin: 0 0 1.25rem; font-size: 1.5rem; }
-  .breadcrumb { color: #888; font-size: 0.9rem; margin-bottom: 0.5rem; }
-  .breadcrumb a { color: #47a; text-decoration: none; }
+  body {
+    margin: 0; background: #f2f3f3; color: #16191f;
+    font-family: "Amazon Ember", "Helvetica Neue", Roboto, Arial, sans-serif;
+  }
+  .gp-content { max-width: 600px; margin: 0 auto; padding: 1.5rem 1rem; }
+  h1 { margin: 0 0 1.25rem; font-size: 1.5rem; font-weight: 700; }
+  .breadcrumb { color: #5f6b7a; font-size: 0.875rem; margin-bottom: 0.5rem; }
+  .breadcrumb a { color: #0972d3; text-decoration: none; }
   .breadcrumb a:hover { text-decoration: underline; }
 
-  form { background: #fff; border: 1px solid #ddd; border-radius: 8px; padding: 1.5rem; }
+  form { background: #fff; border: 1px solid #d5dbdb; border-radius: 0; padding: 1.5rem; }
   .field { margin-bottom: 1.25rem; }
-  .field label { display: block; font-weight: 600; margin-bottom: 0.3rem; }
-  .field .hint { display: block; font-size: 0.85rem; color: #666; margin-bottom: 0.4rem; }
+  .field label { display: block; font-weight: 700; margin-bottom: 0.3rem; }
+  .field .hint { display: block; font-size: 0.85rem; color: #5f6b7a; margin-bottom: 0.4rem; }
   .field input {
-    width: 100%; padding: 0.6rem; font-size: 1rem;
-    border: 1px solid #ccc; border-radius: 4px; box-sizing: border-box;
+    width: 100%; padding: 0.55rem 0.7rem; font-size: 1rem; font-family: inherit;
+    border: 1px solid #aab7b8; border-radius: 0; box-sizing: border-box;
   }
-  .field input:focus { outline: 2px solid #47a; outline-offset: -1px; border-color: #47a; }
+  .field input:focus { outline: 2px solid #0972d3; outline-offset: -1px; border-color: #0972d3; }
 
-  .error { background: #ffe5e5; color: #b00; padding: 0.75rem; border-radius: 4px; margin-bottom: 1.25rem; }
+  .error { background: #fdf3f1; color: #d91515; border: 1px solid #d91515; padding: 0.75rem; border-radius: 0; margin-bottom: 1.25rem; }
 
   .actions { display: flex; gap: 0.5rem; margin-top: 1.5rem; }
   .actions button.primary {
-    padding: 0.75rem 1.5rem; font-size: 1rem; border: none; border-radius: 4px;
-    cursor: pointer; font-weight: 600; background: #4a7; color: white;
+    padding: 0.55rem 1.5rem; font-size: 0.95rem; border: 1px solid #ec7211; border-radius: 0;
+    cursor: pointer; font-weight: 700; background: #ec7211; color: #fff; font-family: inherit;
   }
+  .actions button.primary:hover { background: #eb5f07; border-color: #eb5f07; }
   .actions a.cancel {
-    padding: 0.75rem 1.5rem; font-size: 1rem; border: 1px solid #ccc; border-radius: 4px;
-    color: #333; text-decoration: none; background: #fff;
+    padding: 0.55rem 1.5rem; font-size: 0.95rem; border: 1px solid #687078; border-radius: 0;
+    color: #16191f; text-decoration: none; background: #fff; font-weight: 700;
   }
-  .actions a.cancel:hover { background: #f4f4f4; }
+  .actions a.cancel:hover { background: #f2f3f3; }
 </style>
 </head>
 <body>
+{{template "nav"}}
+<div class="gp-content">
 <div class="breadcrumb">
   {{if .Return}}<a href="{{.Return}}">← Back</a>{{else}}<a href="/products">← Products</a>{{end}}
 </div>
@@ -68,5 +75,6 @@
     <a class="cancel" href="{{if .Return}}{{.Return}}{{else}}/products{{end}}">Cancel</a>
   </div>
 </form>
+</div>
 </body>
 </html>

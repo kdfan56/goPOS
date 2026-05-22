@@ -15,3 +15,8 @@ goPOS
 # Reference dump from the old iPOS system (multi-GB SQL Server .BAK, PDFs, xls).
 # Local-only migration source — never belongs in git.
 oldPOSdata/
+launch.sh
+
+# Personal reference / scratchpad docs — not part of the POS codebase.
+EXAMPLES.md
+KARPATHY.md

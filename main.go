@@ -72,9 +72,7 @@ func main() {
 	}
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /", func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprintln(w, "goPOS up")
-	})
+	mux.HandleFunc("GET /", dashboardHandler(db, tmpl))
 	mux.HandleFunc("GET /products", productsHandler(db, tmpl))
 	mux.HandleFunc("GET /products/new", newProductFormHandler(tmpl))
 	mux.HandleFunc("POST /products/new", createProductHandler(db, tmpl))
@@ -113,6 +111,13 @@ func main() {
 	}
 }
 
+// ctxKey is a private type for context keys so values can't collide with keys
+// set elsewhere. roleKey carries the authenticated role ("admin"/"cashier") from
+// requireAuth down to handlers — the dashboard uses it to send cashiers to /pos.
+type ctxKey int
+
+const roleKey ctxKey = iota
+
 // requireAuth gates every request behind HTTP Basic Auth and a role.
 // Two credential pairs: admin (full access) and cashier (POS + price check only).
 // Whichever pair matches sets the role; cashiers are then restricted by cashierAllowed.
@@ -142,7 +147,8 @@ func requireAuth(adminUser, adminPass, cashierUser, cashierPass string, next htt
 			return
 		}
 
-		next.ServeHTTP(w, r)
+		ctx := context.WithValue(r.Context(), roleKey, role)
+		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
 
@@ -625,6 +631,124 @@ func reportsHandler(db *sql.DB, tmpl *template.Template) http.HandlerFunc {
 
 		if err := tmpl.ExecuteTemplate(w, "reports.html", data); err != nil {
 			log.Printf("render reports: %v", err)
+		}
+	}
+}
+
+type dashboardTopItem struct {
+	Name      string
+	Qty       int
+	RevenueRs string // preformatted with thousands separators
+}
+
+type dashboardData struct {
+	TodaySalesRs string
+	TodayCount   int
+	MonthLabel   string // e.g. "May 2026"
+	MonthSalesRs string
+	TopItems     []dashboardTopItem
+}
+
+// formatRupees renders a whole-rupee amount with thousands separators
+// (12450 -> "12,450"). Done in Go so the template can stay dumb.
+func formatRupees(n int) string {
+	s := strconv.Itoa(n)
+	neg := strings.HasPrefix(s, "-")
+	if neg {
+		s = s[1:]
+	}
+	var b strings.Builder
+	for i, c := range s {
+		if i > 0 && (len(s)-i)%3 == 0 {
+			b.WriteByte(',')
+		}
+		b.WriteRune(c)
+	}
+	if neg {
+		return "-" + b.String()
+	}
+	return b.String()
+}
+
+func dashboardHandler(db *sql.DB, tmpl *template.Template) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		// Cashiers don't see manager numbers — bounce them to the till.
+		if role, _ := r.Context().Value(roleKey).(string); role == "cashier" {
+			http.Redirect(w, r, "/pos", http.StatusSeeOther)
+			return
+		}
+
+		// Pakistan-local "today" and current month, matching the reports convention
+		// (SQLite stores created_at as UTC; '+5 hours' shifts to local before truncating).
+		nowLocal := time.Now().In(storeLocation)
+		today := time.Date(nowLocal.Year(), nowLocal.Month(), nowLocal.Day(), 0, 0, 0, 0, storeLocation)
+		todayISO := today.Format("2006-01-02")
+		monthKey := nowLocal.Format("2006-01")
+
+		var todayTotal, todayCount int
+		err := db.QueryRow(
+			`SELECT COALESCE(SUM(total_rupees), 0), COUNT(*)
+			 FROM transactions
+			 WHERE date(created_at, '+5 hours') = ?`, todayISO,
+		).Scan(&todayTotal, &todayCount)
+		if err != nil {
+			log.Printf("dashboard today query: %v", err)
+			http.Error(w, "failed to load dashboard", http.StatusInternalServerError)
+			return
+		}
+
+		var monthTotal int
+		err = db.QueryRow(
+			`SELECT COALESCE(SUM(total_rupees), 0)
+			 FROM transactions
+			 WHERE strftime('%Y-%m', created_at, '+5 hours') = ?`, monthKey,
+		).Scan(&monthTotal)
+		if err != nil {
+			log.Printf("dashboard month query: %v", err)
+			http.Error(w, "failed to load dashboard", http.StatusInternalServerError)
+			return
+		}
+
+		// Top 5 products by units sold over the last 7 local days.
+		rows, err := db.Query(
+			`SELECT p.name, SUM(ti.quantity) AS qty, SUM(ti.line_total_rupees) AS revenue
+			 FROM transaction_items ti
+			 JOIN transactions t ON t.id = ti.transaction_id
+			 JOIN products p ON p.id = ti.product_id
+			 WHERE date(t.created_at, '+5 hours') >= date(?, '-6 days')
+			 GROUP BY p.id
+			 ORDER BY qty DESC, revenue DESC
+			 LIMIT 5`, todayISO,
+		)
+		if err != nil {
+			log.Printf("dashboard top query: %v", err)
+			http.Error(w, "failed to load dashboard", http.StatusInternalServerError)
+			return
+		}
+		defer rows.Close()
+
+		var top []dashboardTopItem
+		for rows.Next() {
+			var it dashboardTopItem
+			var revenue int
+			if err := rows.Scan(&it.Name, &it.Qty, &revenue); err != nil {
+				log.Printf("dashboard top scan: %v", err)
+				http.Error(w, "failed to load dashboard", http.StatusInternalServerError)
+				return
+			}
+			it.RevenueRs = formatRupees(revenue)
+			top = append(top, it)
+		}
+
+		data := dashboardData{
+			TodaySalesRs: formatRupees(todayTotal),
+			TodayCount:   todayCount,
+			MonthLabel:   nowLocal.Format("Jan 2006"),
+			MonthSalesRs: formatRupees(monthTotal),
+			TopItems:     top,
+		}
+		if err := tmpl.ExecuteTemplate(w, "dashboard.html", data); err != nil {
+			log.Printf("render dashboard: %v", err)
 		}
 	}
 }

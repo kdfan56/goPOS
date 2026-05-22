@@ -4,34 +4,36 @@
 <meta charset="UTF-8">
 <title>Sales Reports — goPOS</title>
 <style>
-  body { font-family: system-ui, sans-serif; max-width: 900px; margin: 2rem auto; padding: 0 1rem; color: #222; }
-  h1 { margin: 0 0 0.25rem; }
-  .subtitle { color: #666; margin: 0 0 1.5rem; font-size: 0.95rem; }
-  .breadcrumb { color: #888; font-size: 0.9rem; margin-bottom: 0.5rem; }
-  .breadcrumb a { color: #47a; text-decoration: none; }
-  .breadcrumb a:hover { text-decoration: underline; }
+  body {
+    margin: 0; background: #f2f3f3; color: #16191f;
+    font-family: "Amazon Ember", "Helvetica Neue", Roboto, Arial, sans-serif;
+  }
+  .gp-content { max-width: 900px; margin: 0 auto; padding: 1.5rem 1rem; }
+  h1 { margin: 0 0 0.25rem; font-size: 1.5rem; font-weight: 700; }
+  .subtitle { color: #5f6b7a; margin: 0 0 1.5rem; font-size: 0.875rem; }
 
-  table { width: 100%; border-collapse: collapse; background: #fff; border: 1px solid #ddd; border-radius: 8px; overflow: hidden; }
-  th, td { padding: 0.7rem 0.9rem; text-align: left; border-bottom: 1px solid #eee; }
-  th { background: #fafafa; font-size: 0.85rem; color: #555; }
+  table { width: 100%; border-collapse: collapse; background: #fff; border: 1px solid #d5dbdb; }
+  th, td { padding: 0.7rem 1rem; text-align: left; border-bottom: 1px solid #e9ebed; font-size: 0.875rem; }
+  th { background: #fafafa; color: #414d5c; font-weight: 700; border-bottom: 1px solid #d5dbdb; }
   td.right, th.right { text-align: right; font-variant-numeric: tabular-nums; }
 
-  tr.today-row { background: #fffbe6; }
+  tr.today-row { background: #f0f7ff; }
   tr.today-row td:first-child { font-weight: 700; }
   .today-badge {
-    display: inline-block; background: #b40; color: #fff; padding: 1px 6px;
-    border-radius: 4px; font-size: 0.7rem; font-weight: 600; margin-left: 0.4rem;
+    display: inline-block; background: #0972d3; color: #fff; padding: 1px 8px;
+    border-radius: 0; font-size: 0.7rem; font-weight: 700; margin-left: 0.4rem;
     vertical-align: middle; letter-spacing: 0.5px;
   }
 
-  tfoot td { background: #f4f4f4; font-weight: 700; border-top: 2px solid #ccc; border-bottom: none; }
-  tfoot td.right { color: #000; }
+  tfoot td { background: #fafafa; font-weight: 700; border-top: 2px solid #d5dbdb; border-bottom: none; }
+  tfoot td.right { color: #16191f; }
 
-  .zero { color: #aaa; }
+  .zero { color: #aab7b8; }
 </style>
 </head>
 <body>
-<div class="breadcrumb"><a href="/products">← Products</a></div>
+{{template "nav"}}
+<div class="gp-content">
 <h1>Sales Reports</h1>
 <p class="subtitle">Last 7 days. Reconcile the card column against your physical card terminal at end of day.</p>
 
@@ -66,5 +68,6 @@
     </tr>
   </tfoot>
 </table>
+</div>
 </body>
 </html>
