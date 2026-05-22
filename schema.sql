@@ -4,6 +4,8 @@ CREATE TABLE IF NOT EXISTS products (
     name TEXT NOT NULL,
     price_rupees INTEGER NOT NULL,
     stock INTEGER NOT NULL DEFAULT 0,
+    cost_price_rupees INTEGER,
+    category TEXT,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 

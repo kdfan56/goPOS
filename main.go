@@ -70,6 +70,14 @@ func main() {
 			log.Fatalf("migrate receiving_sessions.supplier_id: %v", err)
 		}
 	}
+	for _, col := range []string{
+		`ALTER TABLE products ADD COLUMN cost_price_rupees INTEGER`,
+		`ALTER TABLE products ADD COLUMN category TEXT`,
+	} {
+		if _, err := db.Exec(col); err != nil && !strings.Contains(err.Error(), "duplicate column") {
+			log.Fatalf("migrate products: %v", err)
+		}
+	}
 
 	if err := seedIfEmpty(db); err != nil {
 		log.Fatalf("seed: %v", err)
