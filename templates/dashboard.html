@@ -102,7 +102,7 @@
         <tbody>
           {{range .TopItems}}
           <tr>
-            <td>{{.Name}}</td>
+            <td><a href="/reports/product/{{.ProductID}}" style="color:#0972d3;text-decoration:none;">{{.Name}}</a></td>
             <td class="right">{{.Qty}}</td>
             <td class="right">{{.RevenueRs}}</td>
           </tr>

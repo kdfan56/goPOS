@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>{{.ProductName}} — Sales — goPOS</title>
+<style>
+  body {
+    margin: 0; background: #f2f3f3; color: #16191f;
+    font-family: "Amazon Ember", "Helvetica Neue", Roboto, Arial, sans-serif;
+  }
+  .gp-content { max-width: 700px; margin: 0 auto; padding: 1.5rem 1rem; }
+  .breadcrumb { font-size: 0.875rem; color: #5f6b7a; margin-bottom: 0.5rem; }
+  .breadcrumb a { color: #0972d3; text-decoration: none; }
+  .breadcrumb a:hover { text-decoration: underline; }
+  h1 { margin: 0 0 0.25rem; font-size: 1.5rem; font-weight: 700; }
+  .sub { color: #5f6b7a; font-size: 0.875rem; margin-bottom: 1.25rem; }
+
+  .date-form { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; margin-bottom: 1.25rem; }
+  .date-form label { font-size: 0.875rem; font-weight: 700; color: #414d5c; }
+  .date-form input[type="date"] {
+    padding: 0.45rem 0.6rem; font-size: 0.875rem; font-family: inherit;
+    border: 1px solid #aab7b8; border-radius: 0; background: #fff;
+  }
+  .date-form input[type="date"]:focus { outline: 2px solid #0972d3; outline-offset: -1px; border-color: #0972d3; }
+  .date-form button {
+    padding: 0.45rem 1rem; font-size: 0.875rem; font-weight: 700; font-family: inherit;
+    background: #ec7211; color: #fff; border: 1px solid #ec7211; border-radius: 0; cursor: pointer;
+  }
+  .date-form button:hover { background: #eb5f07; border-color: #eb5f07; }
+
+  table { width: 100%; border-collapse: collapse; background: #fff; border: 1px solid #d5dbdb; }
+  th, td { padding: 0.7rem 1rem; text-align: left; border-bottom: 1px solid #e9ebed; font-size: 0.875rem; }
+  th { background: #fafafa; color: #414d5c; font-weight: 700; border-bottom: 1px solid #d5dbdb; }
+  td.right, th.right { text-align: right; font-variant-numeric: tabular-nums; }
+  tr:last-child td { border-bottom: none; }
+  tfoot td { background: #fafafa; font-weight: 700; border-top: 2px solid #d5dbdb; border-bottom: none; }
+  .empty { color: #5f6b7a; }
+</style>
+</head>
+<body>
+{{template "nav"}}
+<div class="gp-content">
+<div class="breadcrumb"><a href="/reports?from={{.FromDate}}&to={{.ToDate}}">← Reports</a></div>
+<h1>{{.ProductName}}</h1>
+<div class="sub">Sales by day — {{.FromDate}} to {{.ToDate}}</div>
+
+<form class="date-form" method="GET">
+  <label for="from">From</label>
+  <input id="from" name="from" type="date" value="{{.FromDate}}">
+  <label for="to">To</label>
+  <input id="to" name="to" type="date" value="{{.ToDate}}">
+  <button type="submit">Apply</button>
+</form>
+
+{{if .Days}}
+<table>
+  <thead>
+    <tr>
+      <th>Day</th>
+      <th class="right">Qty sold</th>
+      <th class="right">Revenue (Rs.)</th>
+    </tr>
+  </thead>
+  <tbody>
+    {{range .Days}}
+    <tr>
+      <td>{{.Display}}</td>
+      <td class="right">{{.Qty}}</td>
+      <td class="right">{{.RevenueRs}}</td>
+    </tr>
+    {{end}}
+  </tbody>
+  <tfoot>
+    <tr>
+      <td>Total</td>
+      <td class="right">{{.GrandQty}}</td>
+      <td class="right">{{.GrandRevenue}}</td>
+    </tr>
+  </tfoot>
+</table>
+{{else}}
+<p class="empty">No sales for this product in the selected date range.</p>
+{{end}}
+</div>
+</body>
+</html>

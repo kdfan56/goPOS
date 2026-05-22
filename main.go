@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/subtle"
 	"database/sql"
+	"encoding/csv"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -92,6 +93,8 @@ func main() {
 	mux.HandleFunc("GET /receipt/{id}", receiptHandler(db, tmpl))
 	mux.HandleFunc("POST /stock/update", stockUpdateHandler(db))
 	mux.HandleFunc("GET /reports", reportsHandler(db, tmpl))
+	mux.HandleFunc("GET /reports/csv", reportsCSVHandler(db))
+	mux.HandleFunc("GET /reports/product/{id}", productDrilldownHandler(db, tmpl))
 	mux.HandleFunc("GET /receiving", receivingListHandler(db, tmpl))
 	mux.HandleFunc("POST /receiving/new", createReceivingSessionHandler(db, tmpl))
 	mux.HandleFunc("GET /receiving/{id}", receivingDetailHandler(db, tmpl))
@@ -562,66 +565,138 @@ type DailySales struct {
 	TxnCount    int
 }
 
+type HourSales struct {
+	Hour        int
+	Display     string
+	CashRupees  int
+	CardRupees  int
+	TotalRupees int
+	TxnCount    int
+}
+
 type ReportsPageData struct {
 	Days       []DailySales
 	GrandCash  int
 	GrandCard  int
 	GrandTotal int
 	GrandCount int
+	FromDate   string // ISO, for the date-range form
+	ToDate     string
+	HourRows   []HourSales
+}
+
+type productDaySales struct {
+	Display   string
+	Qty       int
+	RevenueRs string
+}
+
+type productDrilldownData struct {
+	ProductName  string
+	FromDate     string
+	ToDate       string
+	Days         []productDaySales
+	GrandQty     int
+	GrandRevenue string
+}
+
+// parseDateRange reads ?from= and ?to= query params (YYYY-MM-DD).
+// Falls back to the last 7 local days if missing or malformed.
+// Swaps if from > to. Caps at 90 days to keep queries bounded.
+func parseDateRange(r *http.Request) (from, to time.Time) {
+	nowLocal := time.Now().In(storeLocation)
+	to = time.Date(nowLocal.Year(), nowLocal.Month(), nowLocal.Day(), 0, 0, 0, 0, storeLocation)
+	from = to.AddDate(0, 0, -6)
+	if s := r.URL.Query().Get("from"); s != "" {
+		if t, err := time.ParseInLocation("2006-01-02", s, storeLocation); err == nil {
+			from = t
+		}
+	}
+	if s := r.URL.Query().Get("to"); s != "" {
+		if t, err := time.ParseInLocation("2006-01-02", s, storeLocation); err == nil {
+			to = t
+		}
+	}
+	if from.After(to) {
+		from, to = to, from
+	}
+	if days := int(to.Sub(from).Hours()/24) + 1; days > 90 {
+		from = to.AddDate(0, 0, -89)
+	}
+	return
+}
+
+// buildDayScaffold returns an ordered slice of ISO date strings (newest first)
+// and a map pre-populated with zero-value DailySales rows for each day.
+func buildDayScaffold(from, to time.Time) ([]string, map[string]*DailySales) {
+	nowLocal := time.Now().In(storeLocation)
+	todayISO := time.Date(nowLocal.Year(), nowLocal.Month(), nowLocal.Day(), 0, 0, 0, 0, storeLocation).Format("2006-01-02")
+
+	numDays := int(to.Sub(from).Hours()/24) + 1
+	ordered := make([]string, 0, numDays)
+	m := make(map[string]*DailySales, numDays)
+	for i := 0; i < numDays; i++ {
+		d := to.AddDate(0, 0, -i)
+		iso := d.Format("2006-01-02")
+		ordered = append(ordered, iso)
+		var display string
+		switch iso {
+		case todayISO:
+			display = "Today (" + d.Format("Mon 2 Jan") + ")"
+		case time.Now().In(storeLocation).AddDate(0, 0, -1).Format("2006-01-02"):
+			display = "Yesterday (" + d.Format("Mon 2 Jan") + ")"
+		default:
+			display = d.Format("Mon 2 Jan 2006")
+		}
+		m[iso] = &DailySales{Date: iso, Display: display, IsToday: iso == todayISO}
+	}
+	return ordered, m
+}
+
+func hourDisplay(h int) string {
+	switch h {
+	case 0:
+		return "12 AM"
+	case 12:
+		return "12 PM"
+	default:
+		if h < 12 {
+			return fmt.Sprintf("%d AM", h)
+		}
+		return fmt.Sprintf("%d PM", h-12)
+	}
 }
 
 func reportsHandler(db *sql.DB, tmpl *template.Template) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		// Today, in Pakistan local time. Used both for the SQL window lower bound
-		// and to label each row.
-		nowLocal := time.Now().In(storeLocation)
-		today := time.Date(nowLocal.Year(), nowLocal.Month(), nowLocal.Day(), 0, 0, 0, 0, storeLocation)
-		todayISO := today.Format("2006-01-02")
+		from, to := parseDateRange(r)
+		fromISO := from.Format("2006-01-02")
+		toISO := to.Format("2006-01-02")
 
-		// Pre-build a scaffold of the last 7 days so days with zero sales still appear.
-		daysMap := make(map[string]*DailySales, 7)
-		ordered := make([]string, 0, 7)
-		for i := 0; i < 7; i++ {
-			d := today.AddDate(0, 0, -i)
-			iso := d.Format("2006-01-02")
-			ordered = append(ordered, iso)
+		ordered, daysMap := buildDayScaffold(from, to)
 
-			var display string
-			switch i {
-			case 0:
-				display = "Today (" + d.Format("Mon 2 Jan") + ")"
-			case 1:
-				display = "Yesterday (" + d.Format("Mon 2 Jan") + ")"
-			default:
-				display = d.Format("Mon 2 Jan 2006")
-			}
-			daysMap[iso] = &DailySales{Date: iso, Display: display, IsToday: i == 0}
-		}
-
-		// Group transactions by Pakistan-local date. SQLite stores created_at as UTC;
-		// `date(col, '+5 hours')` shifts each row into Pakistan local time before truncating.
-		// Pakistan does not observe DST so a fixed offset is safe.
 		rows, err := db.Query(`
 			SELECT date(created_at, '+5 hours') AS day,
-			       SUM(CASE WHEN payment_method = 'cash' THEN total_rupees ELSE 0 END) AS cash_total,
-			       SUM(CASE WHEN payment_method = 'card' THEN total_rupees ELSE 0 END) AS card_total,
-			       SUM(total_rupees) AS day_total,
-			       COUNT(*) AS txn_count
+			       SUM(CASE WHEN payment_method = 'cash' THEN total_rupees ELSE 0 END),
+			       SUM(CASE WHEN payment_method = 'card' THEN total_rupees ELSE 0 END),
+			       SUM(total_rupees),
+			       COUNT(*)
 			FROM transactions
-			WHERE date(created_at, '+5 hours') >= date(?, '-6 days')
+			WHERE date(created_at, '+5 hours') BETWEEN ? AND ?
 			GROUP BY day
-		`, todayISO)
+		`, fromISO, toISO)
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			log.Printf("reports query: %v", err)
+			http.Error(w, "failed to load report", http.StatusInternalServerError)
 			return
 		}
 		defer rows.Close()
-
 		for rows.Next() {
 			var day string
 			var cash, card, total, count int
 			if err := rows.Scan(&day, &cash, &card, &total, &count); err != nil {
-				http.Error(w, err.Error(), http.StatusInternalServerError)
+				log.Printf("reports scan: %v", err)
+				http.Error(w, "failed to load report", http.StatusInternalServerError)
 				return
 			}
 			if ds, ok := daysMap[day]; ok {
@@ -632,7 +707,7 @@ func reportsHandler(db *sql.DB, tmpl *template.Template) http.HandlerFunc {
 			}
 		}
 
-		data := ReportsPageData{Days: make([]DailySales, 0, len(ordered))}
+		data := ReportsPageData{FromDate: fromISO, ToDate: toISO}
 		for _, iso := range ordered {
 			ds := *daysMap[iso]
 			data.Days = append(data.Days, ds)
@@ -642,13 +717,181 @@ func reportsHandler(db *sql.DB, tmpl *template.Template) http.HandlerFunc {
 			data.GrandCount += ds.TxnCount
 		}
 
+		// Hour-of-day breakdown for the selected range.
+		hourRows, err := db.Query(`
+			SELECT CAST(strftime('%H', created_at, '+5 hours') AS INTEGER) AS hr,
+			       SUM(CASE WHEN payment_method = 'cash' THEN total_rupees ELSE 0 END),
+			       SUM(CASE WHEN payment_method = 'card' THEN total_rupees ELSE 0 END),
+			       SUM(total_rupees),
+			       COUNT(*)
+			FROM transactions
+			WHERE date(created_at, '+5 hours') BETWEEN ? AND ?
+			GROUP BY hr
+			ORDER BY hr
+		`, fromISO, toISO)
+		if err != nil {
+			log.Printf("reports hour query: %v", err)
+			http.Error(w, "failed to load report", http.StatusInternalServerError)
+			return
+		}
+		defer hourRows.Close()
+		for hourRows.Next() {
+			var hs HourSales
+			if err := hourRows.Scan(&hs.Hour, &hs.CashRupees, &hs.CardRupees, &hs.TotalRupees, &hs.TxnCount); err != nil {
+				log.Printf("reports hour scan: %v", err)
+				http.Error(w, "failed to load report", http.StatusInternalServerError)
+				return
+			}
+			hs.Display = hourDisplay(hs.Hour)
+			data.HourRows = append(data.HourRows, hs)
+		}
+
 		if err := tmpl.ExecuteTemplate(w, "reports.html", data); err != nil {
 			log.Printf("render reports: %v", err)
 		}
 	}
 }
 
+func reportsCSVHandler(db *sql.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		from, to := parseDateRange(r)
+		fromISO := from.Format("2006-01-02")
+		toISO := to.Format("2006-01-02")
+
+		ordered, daysMap := buildDayScaffold(from, to)
+
+		rows, err := db.Query(`
+			SELECT date(created_at, '+5 hours') AS day,
+			       SUM(CASE WHEN payment_method = 'cash' THEN total_rupees ELSE 0 END),
+			       SUM(CASE WHEN payment_method = 'card' THEN total_rupees ELSE 0 END),
+			       SUM(total_rupees),
+			       COUNT(*)
+			FROM transactions
+			WHERE date(created_at, '+5 hours') BETWEEN ? AND ?
+			GROUP BY day
+		`, fromISO, toISO)
+		if err != nil {
+			log.Printf("csv query: %v", err)
+			http.Error(w, "failed to export", http.StatusInternalServerError)
+			return
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var day string
+			var cash, card, total, count int
+			if err := rows.Scan(&day, &cash, &card, &total, &count); err != nil {
+				log.Printf("csv scan: %v", err)
+				http.Error(w, "failed to export", http.StatusInternalServerError)
+				return
+			}
+			if ds, ok := daysMap[day]; ok {
+				ds.CashRupees = cash
+				ds.CardRupees = card
+				ds.TotalRupees = total
+				ds.TxnCount = count
+			}
+		}
+
+		filename := fmt.Sprintf("sales-%s-to-%s.csv", fromISO, toISO)
+		w.Header().Set("Content-Type", "text/csv")
+		w.Header().Set("Content-Disposition", `attachment; filename="`+filename+`"`)
+
+		cw := csv.NewWriter(w)
+		cw.Write([]string{"Date", "Cash (Rs.)", "Card (Rs.)", "Total (Rs.)", "Transactions"})
+		var grandCash, grandCard, grandTotal, grandCount int
+		for _, iso := range ordered {
+			ds := *daysMap[iso]
+			cw.Write([]string{
+				ds.Date,
+				strconv.Itoa(ds.CashRupees),
+				strconv.Itoa(ds.CardRupees),
+				strconv.Itoa(ds.TotalRupees),
+				strconv.Itoa(ds.TxnCount),
+			})
+			grandCash += ds.CashRupees
+			grandCard += ds.CardRupees
+			grandTotal += ds.TotalRupees
+			grandCount += ds.TxnCount
+		}
+		cw.Write([]string{"TOTAL", strconv.Itoa(grandCash), strconv.Itoa(grandCard), strconv.Itoa(grandTotal), strconv.Itoa(grandCount)})
+		cw.Flush()
+	}
+}
+
+func productDrilldownHandler(db *sql.DB, tmpl *template.Template) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		productID, err := strconv.Atoi(r.PathValue("id"))
+		if err != nil {
+			http.NotFound(w, r)
+			return
+		}
+
+		var productName string
+		if err := db.QueryRowContext(r.Context(), "SELECT name FROM products WHERE id = ?", productID).Scan(&productName); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				http.NotFound(w, r)
+				return
+			}
+			log.Printf("drilldown product query: %v", err)
+			http.Error(w, "failed to load product", http.StatusInternalServerError)
+			return
+		}
+
+		from, to := parseDateRange(r)
+		fromISO := from.Format("2006-01-02")
+		toISO := to.Format("2006-01-02")
+
+		rows, err := db.QueryContext(r.Context(), `
+			SELECT date(t.created_at, '+5 hours') AS day,
+			       SUM(ti.quantity) AS qty,
+			       SUM(ti.line_total_rupees) AS revenue
+			FROM transaction_items ti
+			JOIN transactions t ON t.id = ti.transaction_id
+			WHERE ti.product_id = ?
+			  AND date(t.created_at, '+5 hours') BETWEEN ? AND ?
+			GROUP BY day
+			ORDER BY day DESC
+		`, productID, fromISO, toISO)
+		if err != nil {
+			log.Printf("drilldown query: %v", err)
+			http.Error(w, "failed to load drilldown", http.StatusInternalServerError)
+			return
+		}
+		defer rows.Close()
+
+		data := productDrilldownData{
+			ProductName: productName,
+			FromDate:    fromISO,
+			ToDate:      toISO,
+		}
+		var grandRevenue int
+		for rows.Next() {
+			var isoDay string
+			var qty, revenue int
+			if err := rows.Scan(&isoDay, &qty, &revenue); err != nil {
+				log.Printf("drilldown scan: %v", err)
+				http.Error(w, "failed to load drilldown", http.StatusInternalServerError)
+				return
+			}
+			d, _ := time.ParseInLocation("2006-01-02", isoDay, storeLocation)
+			data.Days = append(data.Days, productDaySales{
+				Display:   d.Format("Mon 2 Jan 2006"),
+				Qty:       qty,
+				RevenueRs: formatRupees(revenue),
+			})
+			data.GrandQty += qty
+			grandRevenue += revenue
+		}
+		data.GrandRevenue = formatRupees(grandRevenue)
+
+		if err := tmpl.ExecuteTemplate(w, "product_drilldown.html", data); err != nil {
+			log.Printf("render drilldown: %v", err)
+		}
+	}
+}
+
 type dashboardTopItem struct {
+	ProductID int
 	Name      string
 	Qty       int
 	RevenueRs string // preformatted with thousands separators
@@ -730,7 +973,7 @@ func dashboardHandler(db *sql.DB, tmpl *template.Template) http.HandlerFunc {
 
 		// Top 5 products by units sold over the last 7 local days.
 		rows, err := db.Query(
-			`SELECT p.name, SUM(ti.quantity) AS qty, SUM(ti.line_total_rupees) AS revenue
+			`SELECT p.id, p.name, SUM(ti.quantity) AS qty, SUM(ti.line_total_rupees) AS revenue
 			 FROM transaction_items ti
 			 JOIN transactions t ON t.id = ti.transaction_id
 			 JOIN products p ON p.id = ti.product_id
@@ -750,7 +993,7 @@ func dashboardHandler(db *sql.DB, tmpl *template.Template) http.HandlerFunc {
 		for rows.Next() {
 			var it dashboardTopItem
 			var revenue int
-			if err := rows.Scan(&it.Name, &it.Qty, &revenue); err != nil {
+			if err := rows.Scan(&it.ProductID, &it.Name, &it.Qty, &revenue); err != nil {
 				log.Printf("dashboard top scan: %v", err)
 				http.Error(w, "failed to load dashboard", http.StatusInternalServerError)
 				return
