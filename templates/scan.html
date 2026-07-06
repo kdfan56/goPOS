@@ -194,9 +194,7 @@ function showResult(p) {
   resultEl.classList.add('show');
 }
 
-// Renders the "Recent additions" list. Receivers compare entries here against
-// the physical pile in front of them to decide whether the current total
-// already includes their shipment or not.
+// Receivers compare this list against the physical pile in front of them.
 function renderMovements(additions) {
   if (!additions || additions.length === 0) {
     rMovements.innerHTML = '<div class="movements-empty">No additions logged yet.</div>';

@@ -20,13 +20,8 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-// Loaded once at startup; receipts display Pakistan wall-clock time.
 var storeLocation *time.Location
 
-// lowStockThreshold is the stock count below which a product is flagged as "low".
-// Affects: SQL filter on /products?low=1, the banner count, the row colour CSS in
-// products.html (rendered via .Threshold from the page data), and the orange
-// "low" colour in templates/scan.html (still hardcoded — sync manually if changed).
 const lowStockThreshold = 10
 
 type Product struct {
@@ -50,7 +45,7 @@ func main() {
 	}
 	defer db.Close()
 
-	// SQLite ignores REFERENCES clauses unless this is on. Do not remove.
+	// SQLite ignores REFERENCES clauses unless this is on
 	if _, err := db.Exec("PRAGMA foreign_keys = ON"); err != nil {
 		log.Fatalf("enable foreign keys: %v", err)
 	}
@@ -63,8 +58,7 @@ func main() {
 		log.Fatalf("apply schema: %v", err)
 	}
 
-	// One-off migration: add supplier_id to existing receiving_sessions tables.
-	// SQLite ALTER TABLE has no IF NOT EXISTS; we ignore the "duplicate column" error.
+	// no ADD COLUMN IF NOT EXISTS in SQLite — ignore duplicate-column on rerun
 	if _, err := db.Exec(`ALTER TABLE receiving_sessions ADD COLUMN supplier_id INTEGER REFERENCES suppliers(id)`); err != nil {
 		if !strings.Contains(err.Error(), "duplicate column") {
 			log.Fatalf("migrate receiving_sessions.supplier_id: %v", err)
@@ -135,16 +129,10 @@ func main() {
 	}
 }
 
-// ctxKey is a private type for context keys so values can't collide with keys
-// set elsewhere. roleKey carries the authenticated role ("admin"/"cashier") from
-// requireAuth down to handlers — the dashboard uses it to send cashiers to /pos.
 type ctxKey int
 
 const roleKey ctxKey = iota
 
-// requireAuth gates every request behind HTTP Basic Auth and a role.
-// Two credential pairs: admin (full access) and cashier (POS + price check only).
-// Whichever pair matches sets the role; cashiers are then restricted by cashierAllowed.
 func requireAuth(adminUser, adminPass, cashierUser, cashierPass string, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		u, p, ok := r.BasicAuth()
@@ -176,23 +164,20 @@ func requireAuth(adminUser, adminPass, cashierUser, cashierPass string, next htt
 	})
 }
 
-// credMatch compares supplied credentials against an expected pair in constant
-// time, so an attacker can't learn the username/password from response timing.
+// constant-time so response timing can't leak credentials
 func credMatch(u, p, wantUser, wantPass string) bool {
 	userOK := subtle.ConstantTimeCompare([]byte(u), []byte(wantUser)) == 1
 	passOK := subtle.ConstantTimeCompare([]byte(p), []byte(wantPass)) == 1
 	return userOK && passOK
 }
 
-// cashierAllowed is the allow-list of paths a cashier role may reach. Everything
-// not listed here (products, stock, reports, receiving) is admin-only. Keep this
-// in sync with the access matrix in NOTES.md when routes are added.
+// anything not listed here is admin-only
 func cashierAllowed(path string) bool {
 	switch path {
 	case "/", "/pos", "/price-check", "/pos/scan", "/pos/checkout":
 		return true
 	}
-	// Receipts are /receipt/{id} — cashier prints what they sell.
+
 	return strings.HasPrefix(path, "/receipt/")
 }
 
@@ -216,9 +201,6 @@ func seedIfEmpty(db *sql.DB) error {
 		{Barcode: "8964000890123", Name: "Knorr Chicken Cube 4pc", PriceRupees: 90, Stock: 45},
 	}
 
-	// Wrap seeding in a tx so each seed product + its initial movement row land
-	// atomically. Keeps the audit trail consistent with user-added products —
-	// otherwise seeded items would have no history and look "empty" on /scan.
 	ctx := context.Background()
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
@@ -282,9 +264,7 @@ func scanHandler(db *sql.DB) http.HandlerFunc {
 			writeJSONError(w, http.StatusBadRequest, "bad request")
 			return
 		}
-		// Normalize: strip everything that isn't a digit. Handles whitespace,
-		// scanner-format delimiters, control chars — anything non-digit gets dropped.
-		// Read side stays permissive on length (lookup just won't match anything).
+
 		req.Barcode = normalizeBarcode(req.Barcode)
 		if req.Barcode == "" {
 			writeJSONError(w, http.StatusBadRequest, "barcode required")
@@ -307,10 +287,6 @@ func scanHandler(db *sql.DB) http.HandlerFunc {
 			return
 		}
 
-		// Recent additions for the receiving-context display on /scan.
-		// Filter delta > 0 so sales never leak into this view — receivers only
-		// care about stock that *came in*. Non-empty slice initializer keeps
-		// the JSON shape as [] rather than null when there's no history yet.
 		additions := recentAdditions(db, p.ID)
 
 		w.Header().Set("Content-Type", "application/json")
@@ -328,15 +304,13 @@ func scanHandler(db *sql.DB) http.HandlerFunc {
 type recentAddition struct {
 	Delta     int    `json:"delta"`
 	Reason    string `json:"reason"`
-	CreatedAt string `json:"created_at"` // formatted in store-local time, ready to render
+	CreatedAt string `json:"created_at"`
 }
 
 func recentAdditions(db *sql.DB, productID int) []recentAddition {
-	out := []recentAddition{} // not nil — JSON should always be an array
+	out := []recentAddition{}
 	rows, err := db.Query(
-		// id DESC is a tiebreaker: created_at has second-resolution, so two
-		// adjustments inside the same second would otherwise return in undefined
-		// order. id is monotonic autoincrement, so newer rows always sort higher.
+
 		`SELECT delta, reason, created_at
 		 FROM stock_movements
 		 WHERE product_id = ? AND delta > 0
@@ -345,7 +319,7 @@ func recentAdditions(db *sql.DB, productID int) []recentAddition {
 		productID,
 	)
 	if err != nil {
-		// Non-fatal: lookup still returns the product. Logged for visibility.
+
 		log.Printf("recent additions query: %v", err)
 		return out
 	}
@@ -403,7 +377,7 @@ func checkoutHandler(db *sql.DB) http.HandlerFunc {
 			name        string
 			price       int
 			quantity    int
-			stockBefore int // captured pre-update so the movement row can record new_stock
+			stockBefore int
 		}
 		lines := make([]priced, 0, len(req.Items))
 		total := 0
@@ -564,8 +538,8 @@ func receiptHandler(db *sql.DB, tmpl *template.Template) http.HandlerFunc {
 }
 
 type DailySales struct {
-	Date        string // ISO YYYY-MM-DD, used for map keys and CSS
-	Display     string // human-friendly label like "Today (Fri 15 May)"
+	Date        string
+	Display     string
 	IsToday     bool
 	CashRupees  int
 	CardRupees  int
@@ -588,7 +562,7 @@ type ReportsPageData struct {
 	GrandCard  int
 	GrandTotal int
 	GrandCount int
-	FromDate   string // ISO, for the date-range form
+	FromDate   string
 	ToDate     string
 	HourRows   []HourSales
 }
@@ -608,9 +582,6 @@ type productDrilldownData struct {
 	GrandRevenue string
 }
 
-// parseDateRange reads ?from= and ?to= query params (YYYY-MM-DD).
-// Falls back to the last 7 local days if missing or malformed.
-// Swaps if from > to. Caps at 90 days to keep queries bounded.
 func parseDateRange(r *http.Request) (from, to time.Time) {
 	nowLocal := time.Now().In(storeLocation)
 	to = time.Date(nowLocal.Year(), nowLocal.Month(), nowLocal.Day(), 0, 0, 0, 0, storeLocation)
@@ -634,8 +605,6 @@ func parseDateRange(r *http.Request) (from, to time.Time) {
 	return
 }
 
-// buildDayScaffold returns an ordered slice of ISO date strings (newest first)
-// and a map pre-populated with zero-value DailySales rows for each day.
 func buildDayScaffold(from, to time.Time) ([]string, map[string]*DailySales) {
 	nowLocal := time.Now().In(storeLocation)
 	todayISO := time.Date(nowLocal.Year(), nowLocal.Month(), nowLocal.Day(), 0, 0, 0, 0, storeLocation).Format("2006-01-02")
@@ -683,6 +652,7 @@ func reportsHandler(db *sql.DB, tmpl *template.Template) http.HandlerFunc {
 
 		ordered, daysMap := buildDayScaffold(from, to)
 
+		// created_at is UTC; +5 hours shifts to Pakistan local
 		rows, err := db.Query(`
 			SELECT date(created_at, '+5 hours') AS day,
 			       SUM(CASE WHEN payment_method = 'cash' THEN total_rupees ELSE 0 END),
@@ -725,7 +695,6 @@ func reportsHandler(db *sql.DB, tmpl *template.Template) http.HandlerFunc {
 			data.GrandCount += ds.TxnCount
 		}
 
-		// Hour-of-day breakdown for the selected range.
 		hourRows, err := db.Query(`
 			SELECT CAST(strftime('%H', created_at, '+5 hours') AS INTEGER) AS hr,
 			       SUM(CASE WHEN payment_method = 'cash' THEN total_rupees ELSE 0 END),
@@ -902,14 +871,14 @@ type dashboardTopItem struct {
 	ProductID int
 	Name      string
 	Qty       int
-	RevenueRs string // preformatted with thousands separators
+	RevenueRs string
 }
 
 type dashboardData struct {
-	TodaySalesRs string
-	TodayCount   int
-	MonthLabel   string // e.g. "May 2026"
-	MonthSalesRs string
+	TodaySalesRs  string
+	TodayCount    int
+	MonthLabel    string
+	MonthSalesRs  string
 	LowStockCount int
 	TopItems      []dashboardTopItem
 	ReportDays    []DailySales
@@ -919,8 +888,6 @@ type dashboardData struct {
 	GrandCount    int
 }
 
-// formatRupees renders a whole-rupee amount with thousands separators
-// (12450 -> "12,450"). Done in Go so the template can stay dumb.
 func formatRupees(n int) string {
 	s := strconv.Itoa(n)
 	neg := strings.HasPrefix(s, "-")
@@ -942,14 +909,13 @@ func formatRupees(n int) string {
 
 func dashboardHandler(db *sql.DB, tmpl *template.Template) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		// Cashiers don't see manager numbers — bounce them to the till.
+
+		// cashiers get the till, not manager numbers
 		if role, _ := r.Context().Value(roleKey).(string); role == "cashier" {
 			http.Redirect(w, r, "/pos", http.StatusSeeOther)
 			return
 		}
 
-		// Pakistan-local "today" and current month, matching the reports convention
-		// (SQLite stores created_at as UTC; '+5 hours' shifts to local before truncating).
 		nowLocal := time.Now().In(storeLocation)
 		today := time.Date(nowLocal.Year(), nowLocal.Month(), nowLocal.Day(), 0, 0, 0, 0, storeLocation)
 		todayISO := today.Format("2006-01-02")
@@ -979,7 +945,6 @@ func dashboardHandler(db *sql.DB, tmpl *template.Template) http.HandlerFunc {
 			return
 		}
 
-		// Top 5 products by units sold over the last 7 local days.
 		rows, err := db.Query(
 			`SELECT p.id, p.name, SUM(ti.quantity) AS qty, SUM(ti.line_total_rupees) AS revenue
 			 FROM transaction_items ti
@@ -1019,7 +984,6 @@ func dashboardHandler(db *sql.DB, tmpl *template.Template) http.HandlerFunc {
 			return
 		}
 
-		// 7-day sales breakdown — same query as reportsHandler, same scaffold/merge pattern.
 		daysMap := make(map[string]*DailySales, 7)
 		orderedDays := make([]string, 0, 7)
 		for i := 0; i < 7; i++ {
@@ -1117,8 +1081,6 @@ func stockUpdateHandler(db *sql.DB) http.HandlerFunc {
 		}
 		defer tx.Rollback()
 
-		// Read old stock first so we can compute the signed delta and detect not-found
-		// in one shot (no separate RowsAffected probe needed).
 		var oldStock int
 		err = tx.QueryRowContext(ctx, "SELECT stock FROM products WHERE id = ?", req.ProductID).Scan(&oldStock)
 		if errors.Is(err, sql.ErrNoRows) {
@@ -1131,8 +1093,6 @@ func stockUpdateHandler(db *sql.DB) http.HandlerFunc {
 			return
 		}
 
-		// If the new value equals the old, skip both the UPDATE and the movement
-		// row — no real change happened, no point polluting the audit log.
 		if req.Stock != oldStock {
 			if _, err := tx.ExecContext(ctx, "UPDATE products SET stock = ? WHERE id = ?", req.Stock, req.ProductID); err != nil {
 				log.Printf("stock update: %v", err)
@@ -1152,8 +1112,6 @@ func stockUpdateHandler(db *sql.DB) http.HandlerFunc {
 			return
 		}
 
-		// Return the refreshed additions list so /scan can re-render it without
-		// a second roundtrip. Cheap indexed query, fires after commit.
 		additions := recentAdditions(db, req.ProductID)
 
 		w.Header().Set("Content-Type", "application/json")
@@ -1187,20 +1145,18 @@ type supplierFormData struct {
 type ReceivingSession struct {
 	ID           int
 	Label        string
-	SupplierName string // "" if no supplier linked
-	StartedAt    string // formatted store-local, ready to render
-	ItemCount    int    // distinct products scanned in
-	TotalQty     int    // sum of all qtys
+	SupplierName string
+	StartedAt    string
+	ItemCount    int
+	TotalQty     int
 }
 
 type receivingListData struct {
 	Sessions  []ReceivingSession
-	Suppliers []Supplier // active suppliers, for the "Start session" dropdown
+	Suppliers []Supplier
 	Error     string
 }
 
-// loadActiveSuppliers returns all active suppliers ordered by name.
-// Used for dropdowns on the receiving list page.
 func loadActiveSuppliers(db *sql.DB) ([]Supplier, error) {
 	rows, err := db.Query(`SELECT id, name FROM suppliers WHERE active = 1 ORDER BY name`)
 	if err != nil {
@@ -1218,9 +1174,6 @@ func loadActiveSuppliers(db *sql.DB) ([]Supplier, error) {
 	return out, rows.Err()
 }
 
-// renderReceivingList loads the active sessions and renders the list page.
-// Shared by the GET handler and the failed-create path so there's one place
-// that knows how to build this page (errMsg is "" for the normal GET).
 func renderReceivingList(db *sql.DB, tmpl *template.Template, w http.ResponseWriter, errMsg string) {
 	rows, err := db.Query(
 		`SELECT s.id, s.label, COALESCE(sup.name,''), s.started_at,
@@ -1304,7 +1257,6 @@ func createReceivingSessionHandler(db *sql.DB, tmpl *template.Template) http.Han
 			return
 		}
 
-		// PRG: 303 straight into the new session's page so scanning can begin.
 		http.Redirect(w, r, fmt.Sprintf("/receiving/%d", id), http.StatusSeeOther)
 	}
 }
@@ -1314,23 +1266,21 @@ type ReceivingItem struct {
 	Barcode   string `json:"barcode"`
 	Name      string `json:"name"`
 	Qty       int    `json:"qty"`
-	Stock     int    `json:"stock"` // current product stock, for receiver context
+	Stock     int    `json:"stock"`
 }
 
 type receivingDetailData struct {
 	ID           int
 	Label        string
-	SupplierName string // "" if no supplier linked
+	SupplierName string
 	StartedAt    string
-	FinalizedAt  string // "" while active
+	FinalizedAt  string
 	Status       string
 	TotalQty     int
-	Error        string      // surfaced from the ?err= query param
-	ItemsJSON    template.JS // marshaled []ReceivingItem, rendered into the page's JS
+	Error        string
+	ItemsJSON    template.JS
 }
 
-// loadReceivingItems returns a session's items (joined to product info), ordered
-// by name, plus the summed qty. Used by the detail page and the scan/item APIs.
 func loadReceivingItems(db *sql.DB, sessionID int) ([]ReceivingItem, int, error) {
 	rows, err := db.Query(
 		`SELECT p.id, p.barcode, p.name, i.qty, p.stock
@@ -1343,7 +1293,7 @@ func loadReceivingItems(db *sql.DB, sessionID int) ([]ReceivingItem, int, error)
 	}
 	defer rows.Close()
 
-	items := []ReceivingItem{} // non-nil so JSON renders as [] not null
+	items := []ReceivingItem{}
 	total := 0
 	for rows.Next() {
 		var it ReceivingItem
@@ -1356,7 +1306,6 @@ func loadReceivingItems(db *sql.DB, sessionID int) ([]ReceivingItem, int, error)
 	return items, total, rows.Err()
 }
 
-// receivingSessionStatus reports a session's status and whether it exists.
 func receivingSessionStatus(db *sql.DB, id int) (status string, found bool, err error) {
 	err = db.QueryRow("SELECT status FROM receiving_sessions WHERE id = ?", id).Scan(&status)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -1429,9 +1378,6 @@ func receivingDetailHandler(db *sql.DB, tmpl *template.Template) http.HandlerFun
 	}
 }
 
-// writeReceivingItems writes a session's current items as the JSON response
-// shared by the scan and item-adjust endpoints. scanned is the just-scanned
-// product name (for a status message) or "" when not applicable.
 func writeReceivingItems(db *sql.DB, w http.ResponseWriter, sessionID int, scanned string) {
 	items, total, err := loadReceivingItems(db, sessionID)
 	if err != nil {
@@ -1495,7 +1441,6 @@ func receivingScanHandler(db *sql.DB) http.HandlerFunc {
 			return
 		}
 
-		// Upsert: first scan inserts qty 1, repeat scans bump it.
 		_, err = db.Exec(
 			`INSERT INTO receiving_session_items (session_id, product_id, qty)
 			 VALUES (?, ?, 1)
@@ -1535,7 +1480,7 @@ func receivingItemHandler(db *sql.DB) http.HandlerFunc {
 
 		var req struct {
 			ProductID int    `json:"product_id"`
-			Op        string `json:"op"` // "inc" | "dec" | "remove"
+			Op        string `json:"op"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			writeJSONError(w, http.StatusBadRequest, "bad request")
@@ -1548,8 +1493,7 @@ func receivingItemHandler(db *sql.DB) http.HandlerFunc {
 				"UPDATE receiving_session_items SET qty = qty + 1 WHERE session_id = ? AND product_id = ?",
 				id, req.ProductID)
 		case "dec":
-			// Decrement, then drop the row if it hit zero — qty 0 is the "remove me"
-			// signal (decision 12). Two statements, one transaction.
+
 			ctx := r.Context()
 			var tx *sql.Tx
 			tx, err = db.BeginTx(ctx, nil)
@@ -1603,8 +1547,6 @@ func receivingDeleteHandler(db *sql.DB) http.HandlerFunc {
 		}
 		defer tx.Rollback()
 
-		// Only an active session can be deleted; a finalized one changed stock and
-		// is permanent. If it's gone or finalized, just bounce back to the list.
 		var status string
 		err = tx.QueryRowContext(ctx, "SELECT status FROM receiving_sessions WHERE id = ?", id).Scan(&status)
 		if errors.Is(err, sql.ErrNoRows) || (err == nil && status != "active") {
@@ -1617,8 +1559,7 @@ func receivingDeleteHandler(db *sql.DB) http.HandlerFunc {
 			return
 		}
 
-		// Items first — they reference the session (FK), so the parent can't go
-		// while children point at it.
+		// items reference the session (FK), so they go first
 		if _, err := tx.ExecContext(ctx, "DELETE FROM receiving_session_items WHERE session_id = ?", id); err != nil {
 			log.Printf("delete session items: %v", err)
 			http.Error(w, "failed to delete session", http.StatusInternalServerError)
@@ -1655,7 +1596,6 @@ func receivingFinalizeHandler(db *sql.DB) http.HandlerFunc {
 		}
 		defer tx.Rollback()
 
-		// Must still be active. A finalized session is already committed — just show it.
 		var status string
 		err = tx.QueryRowContext(ctx, "SELECT status FROM receiving_sessions WHERE id = ?", id).Scan(&status)
 		if errors.Is(err, sql.ErrNoRows) {
@@ -1672,8 +1612,6 @@ func receivingFinalizeHandler(db *sql.DB) http.HandlerFunc {
 			return
 		}
 
-		// Read all items first — can't run UPDATEs on this tx while the rows cursor
-		// is still open on the same connection.
 		type line struct {
 			productID int
 			qty       int
@@ -1703,17 +1641,14 @@ func receivingFinalizeHandler(db *sql.DB) http.HandlerFunc {
 			return
 		}
 
-		// Block an empty finalize — nothing to commit.
 		if len(lines) == 0 {
 			http.Redirect(w, r, fmt.Sprintf("/receiving/%d?err=empty", id), http.StatusSeeOther)
 			return
 		}
 
-		// Add each qty to stock and log one movement per item. RETURNING gives the
-		// post-update stock atomically, so the audit snapshot is exact even if
-		// another writer touched the same product between sessions.
 		for _, l := range lines {
 			var newStock int
+			// RETURNING gives the post-update stock for the audit row
 			err := tx.QueryRowContext(ctx,
 				"UPDATE products SET stock = stock + ? WHERE id = ? RETURNING stock",
 				l.qty, l.productID,
@@ -1913,8 +1848,6 @@ func updateSupplierHandler(db *sql.DB, tmpl *template.Template) http.HandlerFunc
 	}
 }
 
-// normalizeBarcode strips every non-digit character. Defensive against
-// scanners that return delimiters or control chars alongside the actual digits.
 func normalizeBarcode(s string) string {
 	var b strings.Builder
 	b.Grow(len(s))
@@ -1926,8 +1859,6 @@ func normalizeBarcode(s string) string {
 	return b.String()
 }
 
-// validateBarcodeLength enforces the standard retail lengths.
-// See decisions/08-barcode-standardization.md for the rationale.
 func validateBarcodeLength(s string) error {
 	n := len(s)
 	if n != 8 && n != 12 && n != 13 && n != 14 {
@@ -1936,10 +1867,6 @@ func validateBarcodeLength(s string) error {
 	return nil
 }
 
-// recordMovement logs a stock change to the audit table. Always call it from
-// inside the same transaction as the UPDATE that changed products.stock — if
-// the insert fails, the stock change rolls back with it. See decisions/09.
-// reason: 'sale' | 'manual_adjust' | 'initial' | 'receiving'
 func recordMovement(ctx context.Context, tx *sql.Tx, productID, delta, newStock int, reason string) error {
 	_, err := tx.ExecContext(ctx,
 		"INSERT INTO stock_movements (product_id, delta, new_stock, reason) VALUES (?, ?, ?, ?)",
@@ -1954,21 +1881,16 @@ func writeJSONError(w http.ResponseWriter, status int, msg string) {
 	json.NewEncoder(w).Encode(map[string]string{"error": msg})
 }
 
-// ProductFormData backs the new_product.html template. Fields are strings
-// (not ints) so the user's raw input is preserved verbatim across a validation
-// failure — including malformed values they need to see to fix.
 type ProductFormData struct {
 	Barcode     string
 	Name        string
 	PriceRupees string
 	Stock       string
-	Return      string // where to redirect on success; "" → /products
+	Return      string
 	Error       string
 }
 
-// validateReturnPath protects against open-redirect attacks: only paths starting
-// with a single "/" are allowed. Rejects absolute URLs (https://evil.com),
-// protocol-relative URLs (//evil.com), and empty values.
+// open-redirect guard: local single-"/" paths only
 func validateReturnPath(s string) string {
 	if !strings.HasPrefix(s, "/") || strings.HasPrefix(s, "//") {
 		return ""
@@ -1978,10 +1900,7 @@ func validateReturnPath(s string) string {
 
 func newProductFormHandler(tmpl *template.Template) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		// If a return value was supplied but fails validation, strip it from the URL
-		// and redirect. This keeps a malicious value like ?return=https://evil.com from
-		// sitting in the browser address bar, which would be alarming even though the
-		// server-side defense already neutralises it for the redirect on submit.
+
 		rawReturn := r.URL.Query().Get("return")
 		validReturn := validateReturnPath(rawReturn)
 		if rawReturn != "" && validReturn == "" {
@@ -1995,9 +1914,6 @@ func newProductFormHandler(tmpl *template.Template) http.HandlerFunc {
 			return
 		}
 
-		// Pre-fill from query params when the user arrived here via the "Add this product"
-		// link on a /scan 404 — barcode is the scanned digits, return is the path to send
-		// them back to after a successful add.
 		data := ProductFormData{
 			Barcode: normalizeBarcode(r.URL.Query().Get("barcode")),
 			Return:  validReturn,
@@ -2034,9 +1950,7 @@ func createProductHandler(db *sql.DB, tmpl *template.Template) http.HandlerFunc 
 			fail("Barcode is required")
 			return
 		}
-		// Normalize+validate the barcode against the store standard.
-		// We rewrite form.Barcode so the (now-clean) value is what gets re-rendered on later errors
-		// and what gets stored on success.
+
 		normalized := normalizeBarcode(form.Barcode)
 		if normalized == "" {
 			fail("Barcode must contain digits")
@@ -2076,7 +1990,8 @@ func createProductHandler(db *sql.DB, tmpl *template.Template) http.HandlerFunc 
 			form.Barcode, form.Name, price, stock,
 		)
 		if err != nil {
-			// SQLite UNIQUE-constraint error message contains "UNIQUE constraint failed".
+
+			// SQLite reports a duplicate barcode as a UNIQUE constraint error
 			if strings.Contains(err.Error(), "UNIQUE") {
 				fail("A product with that barcode already exists")
 				return
@@ -2085,8 +2000,7 @@ func createProductHandler(db *sql.DB, tmpl *template.Template) http.HandlerFunc 
 			fail("Failed to add product")
 			return
 		}
-		// Skip the movement row when the new product starts at zero stock —
-		// no change happened, no point in a zero-delta entry.
+
 		if stock > 0 {
 			productID, err := res.LastInsertId()
 			if err != nil {
@@ -2106,7 +2020,6 @@ func createProductHandler(db *sql.DB, tmpl *template.Template) http.HandlerFunc 
 			return
 		}
 
-		// PRG (Post/Redirect/Get): 303 prevents refresh-resubmits and accidental duplicates.
 		target := form.Return
 		if target == "" {
 			target = "/products"
@@ -2151,11 +2064,10 @@ func productsHandler(db *sql.DB, tmpl *template.Template) http.HandlerFunc {
 			products = append(products, p)
 		}
 
-		// Always count low-stock items so the banner can show even when not filtering.
 		var lowCount int
 		if err := db.QueryRow("SELECT COUNT(*) FROM products WHERE stock < ?", lowStockThreshold).Scan(&lowCount); err != nil {
 			log.Printf("count low stock: %v", err)
-			// Non-fatal — banner just won't show. Page still renders.
+
 		}
 
 		data := productsPageData{

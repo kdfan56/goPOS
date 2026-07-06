@@ -24,9 +24,7 @@
 
 {{define "navScript"}}
 <script>
-  // Highlight the link for the current page. Prefix match (not exact) so deep
-  // pages like /receiving/5 still light up "Receiving"; the '/' guard stops the
-  // Dashboard link matching everything.
+  // Prefix match so /receiving/5 lights up "Receiving"; the '/' guard stops Dashboard matching everything.
   (function () {
     var path = window.location.pathname;
     document.querySelectorAll('.gp-nav a').forEach(function (a) {

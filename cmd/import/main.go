@@ -1,6 +1,3 @@
-// One-shot import of products from iPOS CSV export into pos.db.
-// Usage: go run cmd/import/main.go [--db pos.db] [--csv oldPOSdata/products_export.csv]
-// Safe to re-run: INSERT OR IGNORE skips duplicates on barcode.
 package main
 
 import (
