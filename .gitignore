@@ -1,6 +1,7 @@
 # Local database — has dummy/dev data, diverges per machine.
 # Reset/recreate with `rm pos.db && ./goPOS` (seed re-runs).
 pos.db
+pos.db.testbak
 
 # TLS cert + private key — even self-signed, keys should never be in git.
 # Regenerate with the openssl command in decisions/06-https-and-basic-auth.md.
@@ -9,6 +10,7 @@ key.pem
 
 # Compiled binary — rebuilt by `go build`.
 goPOS
+goPOS-test
 
 
 
