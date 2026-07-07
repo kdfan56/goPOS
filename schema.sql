@@ -6,6 +6,7 @@ CREATE TABLE IF NOT EXISTS products (
     stock INTEGER NOT NULL DEFAULT 0,
     cost_price_rupees INTEGER,
     category TEXT,
+    supplier_id INTEGER REFERENCES suppliers(id),
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
