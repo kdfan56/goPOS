@@ -98,6 +98,7 @@ func main() {
 	mux.HandleFunc("GET /reports", reportsHandler(db, tmpl))
 	mux.HandleFunc("GET /reports/csv", reportsCSVHandler(db))
 	mux.HandleFunc("GET /reports/product/{id}", productDrilldownHandler(db, tmpl))
+	mux.HandleFunc("GET /reports/categories", reportsCategoriesHandler(db, tmpl))
 	mux.HandleFunc("GET /receiving", receivingListHandler(db, tmpl))
 	mux.HandleFunc("POST /receiving/new", createReceivingSessionHandler(db, tmpl))
 	mux.HandleFunc("GET /receiving/{id}", receivingDetailHandler(db, tmpl))
@@ -582,6 +583,24 @@ type productDrilldownData struct {
 	Days         []productDaySales
 	GrandQty     int
 	GrandRevenue string
+}
+
+type CategorySales struct {
+	Category  string
+	Qty       int
+	RevenueRs int
+	CostRs    int
+	ProfitRs  int
+}
+
+type reportsCategoriesPageData struct {
+	Rows       []CategorySales
+	FromDate   string
+	ToDate     string
+	GrandQty   int
+	GrandRev   int
+	GrandCost  int
+	GrandProfit int
 }
 
 func parseDateRange(r *http.Request) (from, to time.Time) {
@@ -2098,6 +2117,57 @@ func productsHandler(db *sql.DB, tmpl *template.Template) http.HandlerFunc {
 		}
 		if err := tmpl.ExecuteTemplate(w, "products.html", data); err != nil {
 			log.Printf("render products: %v", err)
+		}
+	}
+}
+
+func reportsCategoriesHandler(db *sql.DB, tmpl *template.Template) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		from, to := parseDateRange(r)
+		fromISO := from.Format("2006-01-02")
+		toISO := to.Format("2006-01-02")
+
+		rows, err := db.Query(`
+			SELECT COALESCE(p.category, 'Uncategorized'),
+			       SUM(ti.quantity),
+			       SUM(ti.line_total_rupees),
+			       COALESCE(SUM(ti.quantity * p.cost_price_rupees), 0)
+			FROM transaction_items ti
+			JOIN products p ON p.id = ti.product_id
+			JOIN transactions t ON t.id = ti.transaction_id
+			WHERE date(t.created_at, '+5 hours') BETWEEN ? AND ?
+			GROUP BY p.category
+			ORDER BY SUM(ti.line_total_rupees) DESC
+		`, fromISO, toISO)
+		if err != nil {
+			log.Printf("categories report query: %v", err)
+			http.Error(w, "failed to load report", http.StatusInternalServerError)
+			return
+		}
+		defer rows.Close()
+
+		data := reportsCategoriesPageData{FromDate: fromISO, ToDate: toISO}
+		for rows.Next() {
+			var cs CategorySales
+			var cost sql.NullInt64
+			if err := rows.Scan(&cs.Category, &cs.Qty, &cs.RevenueRs, &cost); err != nil {
+				log.Printf("categories report scan: %v", err)
+				http.Error(w, "failed to load report", http.StatusInternalServerError)
+				return
+			}
+			if cost.Valid {
+				cs.CostRs = int(cost.Int64)
+			}
+			cs.ProfitRs = cs.RevenueRs - cs.CostRs
+			data.Rows = append(data.Rows, cs)
+			data.GrandQty += cs.Qty
+			data.GrandRev += cs.RevenueRs
+			data.GrandCost += cs.CostRs
+			data.GrandProfit += cs.ProfitRs
+		}
+
+		if err := tmpl.ExecuteTemplate(w, "reports_categories.html", data); err != nil {
+			log.Printf("render reports_categories: %v", err)
 		}
 	}
 }
