@@ -30,6 +30,7 @@ type Product struct {
 	Name        string
 	PriceRupees int
 	Stock       int
+	Category    string
 }
 
 func main() {
@@ -273,9 +274,9 @@ func scanHandler(db *sql.DB) http.HandlerFunc {
 
 		var p Product
 		err := db.QueryRow(
-			"SELECT id, barcode, name, price_rupees, stock FROM products WHERE barcode = ?",
+			"SELECT id, barcode, name, price_rupees, stock, COALESCE(category,'') FROM products WHERE barcode = ?",
 			req.Barcode,
-		).Scan(&p.ID, &p.Barcode, &p.Name, &p.PriceRupees, &p.Stock)
+		).Scan(&p.ID, &p.Barcode, &p.Name, &p.PriceRupees, &p.Stock, &p.Category)
 
 		if errors.Is(err, sql.ErrNoRows) {
 			writeJSONError(w, http.StatusNotFound, "barcode not found")
@@ -296,6 +297,7 @@ func scanHandler(db *sql.DB) http.HandlerFunc {
 			"name":             p.Name,
 			"price_rupees":     p.PriceRupees,
 			"stock":            p.Stock,
+			"category":         p.Category,
 			"recent_additions": additions,
 		})
 	}
@@ -1886,6 +1888,7 @@ type ProductFormData struct {
 	Name        string
 	PriceRupees string
 	Stock       string
+	Category    string
 	Return      string
 	Error       string
 }
@@ -1936,6 +1939,7 @@ func createProductHandler(db *sql.DB, tmpl *template.Template) http.HandlerFunc 
 			Name:        strings.TrimSpace(r.FormValue("name")),
 			PriceRupees: strings.TrimSpace(r.FormValue("price_rupees")),
 			Stock:       strings.TrimSpace(r.FormValue("stock")),
+			Category:    strings.TrimSpace(r.FormValue("category")),
 			Return:      validateReturnPath(r.FormValue("return")),
 		}
 
@@ -1985,9 +1989,13 @@ func createProductHandler(db *sql.DB, tmpl *template.Template) http.HandlerFunc 
 		}
 		defer tx.Rollback()
 
+		cat := interface{}(nil)
+		if form.Category != "" {
+			cat = form.Category
+		}
 		res, err := tx.ExecContext(ctx,
-			"INSERT INTO products (barcode, name, price_rupees, stock) VALUES (?, ?, ?, ?)",
-			form.Barcode, form.Name, price, stock,
+			"INSERT INTO products (barcode, name, price_rupees, stock, category) VALUES (?, ?, ?, ?, ?)",
+			form.Barcode, form.Name, price, stock, cat,
 		)
 		if err != nil {
 
@@ -2029,21 +2037,32 @@ func createProductHandler(db *sql.DB, tmpl *template.Template) http.HandlerFunc 
 }
 
 type productsPageData struct {
-	Products  []Product
-	LowCount  int
-	LowOnly   bool
-	Threshold int
+	Products       []Product
+	LowCount       int
+	LowOnly        bool
+	CategoryFilter string
+	Threshold      int
 }
 
 func productsHandler(db *sql.DB, tmpl *template.Template) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		lowOnly := r.URL.Query().Get("low") == "1"
+		category := strings.TrimSpace(r.URL.Query().Get("category"))
 
-		query := "SELECT id, barcode, name, price_rupees, stock FROM products"
+		query := "SELECT id, barcode, name, price_rupees, stock, COALESCE(category,'') FROM products"
 		args := []any{}
+
+		var wheres []string
 		if lowOnly {
-			query += " WHERE stock < ?"
+			wheres = append(wheres, "stock < ?")
 			args = append(args, lowStockThreshold)
+		}
+		if category != "" {
+			wheres = append(wheres, "category = ?")
+			args = append(args, category)
+		}
+		if len(wheres) > 0 {
+			query += " WHERE " + strings.Join(wheres, " AND ")
 		}
 		query += " ORDER BY name"
 
@@ -2057,7 +2076,7 @@ func productsHandler(db *sql.DB, tmpl *template.Template) http.HandlerFunc {
 		var products []Product
 		for rows.Next() {
 			var p Product
-			if err := rows.Scan(&p.ID, &p.Barcode, &p.Name, &p.PriceRupees, &p.Stock); err != nil {
+			if err := rows.Scan(&p.ID, &p.Barcode, &p.Name, &p.PriceRupees, &p.Stock, &p.Category); err != nil {
 				http.Error(w, err.Error(), http.StatusInternalServerError)
 				return
 			}
@@ -2071,10 +2090,11 @@ func productsHandler(db *sql.DB, tmpl *template.Template) http.HandlerFunc {
 		}
 
 		data := productsPageData{
-			Products:  products,
-			LowCount:  lowCount,
-			LowOnly:   lowOnly,
-			Threshold: lowStockThreshold,
+			Products:       products,
+			LowCount:       lowCount,
+			LowOnly:        lowOnly,
+			CategoryFilter: category,
+			Threshold:      lowStockThreshold,
 		}
 		if err := tmpl.ExecuteTemplate(w, "products.html", data); err != nil {
 			log.Printf("render products: %v", err)

@@ -70,6 +70,11 @@
     <span class="hint">How many you have in store right now.</span>
     <input id="stock" name="stock" type="number" min="0" step="1" value="{{.Stock}}" required>
   </div>
+  <div class="field">
+    <label for="category">Category</label>
+    <span class="hint">e.g. Food Item, Drinks, Cosmatic. Optional.</span>
+    <input id="category" name="category" value="{{.Category}}">
+  </div>
   <div class="actions">
     <button type="submit" class="primary">Add Product</button>
     <a class="cancel" href="{{if .Return}}{{.Return}}{{else}}/products{{end}}">Cancel</a>

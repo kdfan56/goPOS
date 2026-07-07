@@ -61,6 +61,7 @@
     <tr>
       <th>Barcode</th>
       <th>Name</th>
+      <th>Category</th>
       <th class="right">Price (Rs.)</th>
       <th class="right">Stock</th>
     </tr>
@@ -70,6 +71,7 @@
     <tr>
       <td>{{.Barcode}}</td>
       <td>{{.Name}}</td>
+      <td>{{if .Category}}{{.Category}}{{else}}—{{end}}</td>
       <td class="right">{{.PriceRupees}}</td>
       <td class="right {{if lt .Stock $.Threshold}}low{{end}}">{{.Stock}}</td>
     </tr>
