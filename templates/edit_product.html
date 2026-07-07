@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Edit Product — goPOS</title>
+<style>
+  body {
+    margin: 0; background: #f2f3f3; color: #16191f;
+    font-family: "Amazon Ember", "Helvetica Neue", Roboto, Arial, sans-serif;
+  }
+  .gp-content { max-width: 600px; margin: 0 auto; padding: 1.5rem 1rem; }
+  h1 { margin: 0 0 1.25rem; font-size: 1.5rem; font-weight: 700; }
+  .breadcrumb { color: #5f6b7a; font-size: 0.875rem; margin-bottom: 0.5rem; }
+  .breadcrumb a { color: #0972d3; text-decoration: none; }
+  .breadcrumb a:hover { text-decoration: underline; }
+
+  form { background: #fff; border: 1px solid #d5dbdb; border-radius: 0; padding: 1.5rem; }
+  .field { margin-bottom: 1.25rem; }
+  .field label { display: block; font-weight: 700; margin-bottom: 0.3rem; }
+  .field .hint { display: block; font-size: 0.85rem; color: #5f6b7a; margin-bottom: 0.4rem; }
+  .field input, .field select {
+    width: 100%; padding: 0.55rem 0.7rem; font-size: 1rem; font-family: inherit;
+    border: 1px solid #aab7b8; border-radius: 0; box-sizing: border-box;
+    background: #fff;
+  }
+  .field input:focus, .field select:focus { outline: 2px solid #0972d3; outline-offset: -1px; border-color: #0972d3; }
+
+  .error { background: #fdf3f1; color: #d91515; border: 1px solid #d91515; padding: 0.75rem; border-radius: 0; margin-bottom: 1.25rem; }
+
+  .actions { display: flex; gap: 0.5rem; margin-top: 1.5rem; }
+  .actions button.primary {
+    padding: 0.55rem 1.5rem; font-size: 0.95rem; border: 1px solid #ec7211; border-radius: 0;
+    cursor: pointer; font-weight: 700; background: #ec7211; color: #fff; font-family: inherit;
+  }
+  .actions button.primary:hover { background: #eb5f07; border-color: #eb5f07; }
+  .actions a.cancel {
+    padding: 0.55rem 1.5rem; font-size: 0.95rem; border: 1px solid #687078; border-radius: 0;
+    color: #16191f; text-decoration: none; background: #fff; font-weight: 700;
+  }
+  .actions a.cancel:hover { background: #f2f3f3; }
+</style>
+</head>
+<body>
+{{template "nav"}}
+<div class="gp-content">
+<div class="breadcrumb"><a href="/products">← Products</a></div>
+<h1>Edit Product</h1>
+
+{{if .Error}}<div class="error">{{.Error}}</div>{{end}}
+
+<form method="post" action="/products/{{.Product.ID}}/edit">
+  <div class="field">
+    <label>Barcode</label>
+    <span class="hint">{{.Barcode}} (cannot be changed)</span>
+  </div>
+  <div class="field">
+    <label for="name">Product name</label>
+    <input id="name" name="name" value="{{.Name}}" required autofocus>
+  </div>
+  <div class="field">
+    <label for="price_rupees">Price (Rs.)</label>
+    <input id="price_rupees" name="price_rupees" type="number" min="0" step="1" value="{{.PriceRupees}}" required>
+  </div>
+  <div class="field">
+    <label for="stock">Stock</label>
+    <input id="stock" name="stock" type="number" min="0" step="1" value="{{.Stock}}" required>
+  </div>
+  <div class="field">
+    <label for="category">Category</label>
+    <input id="category" name="category" value="{{.Category}}">
+  </div>
+  <div class="field">
+    <label for="supplier_id">Supplier</label>
+    <select id="supplier_id" name="supplier_id">
+      <option value="">— None —</option>
+      {{range .Suppliers}}
+      <option value="{{.ID}}" {{if eq (printf "%d" .ID) $.SupplierID}}selected{{end}}>{{.Name}}</option>
+      {{end}}
+    </select>
+  </div>
+  <div class="actions">
+    <button type="submit" class="primary">Save Changes</button>
+    <a class="cancel" href="/products">Cancel</a>
+  </div>
+</form>
+</div>
+</body>
+</html>

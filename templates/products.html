@@ -71,6 +71,7 @@
       <th>Category</th>
       <th class="right">Price (Rs.)</th>
       <th class="right">Stock</th>
+      <th></th>
     </tr>
   </thead>
   <tbody>
@@ -81,6 +82,7 @@
       <td>{{if .Category}}{{.Category}}{{else}}—{{end}}</td>
       <td class="right">{{.PriceRupees}}</td>
       <td class="right {{if lt .Stock $.Threshold}}low{{end}}">{{.Stock}}</td>
+      <td><a href="/products/{{.ID}}/edit" style="color:#0972d3;text-decoration:none;">Edit</a></td>
     </tr>
     {{end}}
   </tbody>

@@ -31,6 +31,7 @@ type Product struct {
 	PriceRupees int
 	Stock       int
 	Category    string
+	SupplierID  sql.NullInt64
 }
 
 func main() {
@@ -68,6 +69,7 @@ func main() {
 	for _, col := range []string{
 		`ALTER TABLE products ADD COLUMN cost_price_rupees INTEGER`,
 		`ALTER TABLE products ADD COLUMN category TEXT`,
+		`ALTER TABLE products ADD COLUMN supplier_id INTEGER REFERENCES suppliers(id)`,
 	} {
 		if _, err := db.Exec(col); err != nil && !strings.Contains(err.Error(), "duplicate column") {
 			log.Fatalf("migrate products: %v", err)
@@ -88,6 +90,8 @@ func main() {
 	mux.HandleFunc("GET /products", productsHandler(db, tmpl))
 	mux.HandleFunc("GET /products/new", newProductFormHandler(tmpl))
 	mux.HandleFunc("POST /products/new", createProductHandler(db, tmpl))
+	mux.HandleFunc("GET /products/{id}/edit", editProductFormHandler(db, tmpl))
+	mux.HandleFunc("POST /products/{id}/edit", editProductHandler(db, tmpl))
 	mux.HandleFunc("GET /pos", posHandler(tmpl))
 	mux.HandleFunc("GET /price-check", priceCheckPageHandler(tmpl))
 	mux.HandleFunc("POST /pos/scan", scanHandler(db))
@@ -2180,4 +2184,165 @@ func reportsCategoriesHandler(db *sql.DB, tmpl *template.Template) http.HandlerF
 			log.Printf("render reports_categories: %v", err)
 		}
 	}
+}
+
+type editProductData struct {
+	Product     Product
+	Suppliers   []Supplier
+	Barcode     string
+	Name        string
+	PriceRupees string
+	Stock       string
+	Category    string
+	SupplierID  string
+	Error       string
+}
+
+func queryActiveSuppliers(ctx context.Context, db *sql.DB) ([]Supplier, error) {
+	rows, err := db.QueryContext(ctx, `SELECT id, name FROM suppliers WHERE active = 1 ORDER BY name`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var ss []Supplier
+	for rows.Next() {
+		var s Supplier
+		if err := rows.Scan(&s.ID, &s.Name); err != nil {
+			return nil, err
+		}
+		ss = append(ss, s)
+	}
+	return ss, rows.Err()
+}
+
+func editProductFormHandler(db *sql.DB, tmpl *template.Template) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id, err := strconv.Atoi(r.PathValue("id"))
+		if err != nil {
+			http.NotFound(w, r)
+			return
+		}
+		var p Product
+		err = db.QueryRowContext(r.Context(),
+			"SELECT id, barcode, name, price_rupees, stock, COALESCE(category,''), supplier_id FROM products WHERE id = ?",
+			id,
+		).Scan(&p.ID, &p.Barcode, &p.Name, &p.PriceRupees, &p.Stock, &p.Category, &p.SupplierID)
+		if errors.Is(err, sql.ErrNoRows) {
+			http.NotFound(w, r)
+			return
+		}
+		if err != nil {
+			log.Printf("edit product query: %v", err)
+			http.Error(w, "failed to load product", http.StatusInternalServerError)
+			return
+		}
+
+		suppliers, err := queryActiveSuppliers(r.Context(), db)
+		if err != nil {
+			log.Printf("edit product suppliers: %v", err)
+			http.Error(w, "failed to load suppliers", http.StatusInternalServerError)
+			return
+		}
+
+		sid := ""
+		if p.SupplierID.Valid {
+			sid = strconv.FormatInt(p.SupplierID.Int64, 10)
+		}
+		data := editProductData{
+			Product:     p,
+			Suppliers:   suppliers,
+			Barcode:     p.Barcode,
+			Name:        p.Name,
+			PriceRupees: strconv.Itoa(p.PriceRupees),
+			Stock:       strconv.Itoa(p.Stock),
+			Category:    p.Category,
+			SupplierID:  sid,
+		}
+		if err := tmpl.ExecuteTemplate(w, "edit_product.html", data); err != nil {
+			log.Printf("render edit_product: %v", err)
+		}
+	}
+}
+
+func editProductHandler(db *sql.DB, tmpl *template.Template) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id, err := strconv.Atoi(r.PathValue("id"))
+		if err != nil {
+			http.NotFound(w, r)
+			return
+		}
+		if err := r.ParseForm(); err != nil {
+			http.Error(w, "bad form", http.StatusBadRequest)
+			return
+		}
+		name := strings.TrimSpace(r.FormValue("name"))
+		priceStr := strings.TrimSpace(r.FormValue("price_rupees"))
+		stockStr := strings.TrimSpace(r.FormValue("stock"))
+		category := strings.TrimSpace(r.FormValue("category"))
+		supplierStr := strings.TrimSpace(r.FormValue("supplier_id"))
+
+		if name == "" {
+			renderEditProductError(db, tmpl, w, r, id, "Name is required")
+			return
+		}
+		price, err := strconv.Atoi(priceStr)
+		if err != nil || price < 0 {
+			renderEditProductError(db, tmpl, w, r, id, "Price must be a non-negative whole number")
+			return
+		}
+		stock, err := strconv.Atoi(stockStr)
+		if err != nil || stock < 0 {
+			renderEditProductError(db, tmpl, w, r, id, "Stock must be a non-negative whole number")
+			return
+		}
+
+		var supID interface{}
+		if supplierStr != "" {
+			sid, err := strconv.Atoi(supplierStr)
+			if err != nil {
+				renderEditProductError(db, tmpl, w, r, id, "Invalid supplier")
+				return
+			}
+			supID = sid
+		}
+
+		if _, err := db.ExecContext(r.Context(),
+			"UPDATE products SET name=?, price_rupees=?, stock=?, category=?, supplier_id=? WHERE id=?",
+			name, price, stock, category, supID, id,
+		); err != nil {
+			log.Printf("update product: %v", err)
+			renderEditProductError(db, tmpl, w, r, id, "Failed to save changes")
+			return
+		}
+		http.Redirect(w, r, "/products", http.StatusSeeOther)
+	}
+}
+
+func renderEditProductError(db *sql.DB, tmpl *template.Template, w http.ResponseWriter, r *http.Request, id int, msg string) {
+	var p Product
+	err := db.QueryRowContext(r.Context(),
+		"SELECT id, barcode, name, price_rupees, stock, COALESCE(category,''), supplier_id FROM products WHERE id = ?",
+		id,
+	).Scan(&p.ID, &p.Barcode, &p.Name, &p.PriceRupees, &p.Stock, &p.Category, &p.SupplierID)
+	if err != nil {
+		http.Error(w, "product not found", http.StatusInternalServerError)
+		return
+	}
+	suppliers, _ := queryActiveSuppliers(r.Context(), db)
+	sid := ""
+	if p.SupplierID.Valid {
+		sid = strconv.FormatInt(p.SupplierID.Int64, 10)
+	}
+	data := editProductData{
+		Product:     p,
+		Suppliers:   suppliers,
+		Barcode:     p.Barcode,
+		Name:        p.Name,
+		PriceRupees: strconv.Itoa(p.PriceRupees),
+		Stock:       strconv.Itoa(p.Stock),
+		Category:    p.Category,
+		SupplierID:  sid,
+		Error:       msg,
+	}
+	tmpl.ExecuteTemplate(w, "edit_product.html", data)
 }
