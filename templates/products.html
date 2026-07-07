@@ -43,6 +43,13 @@
   </div>
 </div>
 
+{{if .CategoryFilter}}
+<div class="banner filter-banner">
+  Filtering by category: "{{.CategoryFilter}}".
+  <a href="/products">Show all products</a>
+</div>
+{{end}}
+
 {{if .LowOnly}}
 <div class="banner filter-banner">
   Showing only items with stock below {{.Threshold}}.

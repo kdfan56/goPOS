@@ -2101,6 +2101,11 @@ func productsHandler(db *sql.DB, tmpl *template.Template) http.HandlerFunc {
 			}
 			products = append(products, p)
 		}
+		if err := rows.Err(); err != nil {
+			log.Printf("products rows: %v", err)
+			http.Error(w, "failed to load products", http.StatusInternalServerError)
+			return
+		}
 
 		var lowCount int
 		if err := db.QueryRow("SELECT COUNT(*) FROM products WHERE stock < ?", lowStockThreshold).Scan(&lowCount); err != nil {
@@ -2164,6 +2169,11 @@ func reportsCategoriesHandler(db *sql.DB, tmpl *template.Template) http.HandlerF
 			data.GrandRev += cs.RevenueRs
 			data.GrandCost += cs.CostRs
 			data.GrandProfit += cs.ProfitRs
+		}
+		if err := rows.Err(); err != nil {
+			log.Printf("categories rows: %v", err)
+			http.Error(w, "failed to load report", http.StatusInternalServerError)
+			return
 		}
 
 		if err := tmpl.ExecuteTemplate(w, "reports_categories.html", data); err != nil {
