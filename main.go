@@ -102,6 +102,7 @@ func main() {
 	mux.HandleFunc("GET /reports", reportsHandler(db, tmpl))
 	mux.HandleFunc("GET /reports/csv", reportsCSVHandler(db))
 	mux.HandleFunc("GET /reports/product/{id}", productDrilldownHandler(db, tmpl))
+	mux.HandleFunc("GET /reports/suppliers", reportsSuppliersHandler(db, tmpl))
 	mux.HandleFunc("GET /reports/categories", reportsCategoriesHandler(db, tmpl))
 	mux.HandleFunc("GET /receiving", receivingListHandler(db, tmpl))
 	mux.HandleFunc("POST /receiving/new", createReceivingSessionHandler(db, tmpl))
@@ -2345,4 +2346,79 @@ func renderEditProductError(db *sql.DB, tmpl *template.Template, w http.Response
 		Error:       msg,
 	}
 	tmpl.ExecuteTemplate(w, "edit_product.html", data)
+}
+
+type SupplierSales struct {
+	Supplier  string
+	Qty       int
+	RevenueRs int
+	CostRs    int
+	ProfitRs  int
+}
+
+type reportsSuppliersPageData struct {
+	Rows       []SupplierSales
+	FromDate   string
+	ToDate     string
+	GrandQty   int
+	GrandRev   int
+	GrandCost  int
+	GrandProfit int
+}
+
+func reportsSuppliersHandler(db *sql.DB, tmpl *template.Template) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		from, to := parseDateRange(r)
+		fromISO := from.Format("2006-01-02")
+		toISO := to.Format("2006-01-02")
+
+		rows, err := db.Query(`
+			SELECT COALESCE(s.name, 'Unassigned'),
+			       SUM(ti.quantity),
+			       SUM(ti.line_total_rupees),
+			       COALESCE(SUM(ti.quantity * p.cost_price_rupees), 0)
+			FROM transaction_items ti
+			JOIN products p ON p.id = ti.product_id
+			JOIN transactions t ON t.id = ti.transaction_id
+			LEFT JOIN suppliers s ON s.id = p.supplier_id
+			WHERE date(t.created_at, '+5 hours') BETWEEN ? AND ?
+			GROUP BY s.name
+			ORDER BY SUM(ti.line_total_rupees) DESC
+		`, fromISO, toISO)
+		if err != nil {
+			log.Printf("supplier report query: %v", err)
+			http.Error(w, "failed to load report", http.StatusInternalServerError)
+			return
+		}
+		defer rows.Close()
+
+		data := reportsSuppliersPageData{FromDate: fromISO, ToDate: toISO}
+		for rows.Next() {
+			var cs SupplierSales
+			var cost sql.NullInt64
+			if err := rows.Scan(&cs.Supplier, &cs.Qty, &cs.RevenueRs, &cost); err != nil {
+				log.Printf("supplier report scan: %v", err)
+				http.Error(w, "failed to load report", http.StatusInternalServerError)
+				return
+			}
+			if cost.Valid {
+				cs.CostRs = int(cost.Int64)
+			}
+			cs.ProfitRs = cs.RevenueRs - cs.CostRs
+			data.Rows = append(data.Rows, cs)
+			data.GrandQty += cs.Qty
+			data.GrandRev += cs.RevenueRs
+			data.GrandCost += cs.CostRs
+			data.GrandProfit += cs.ProfitRs
+		}
+		if err := rows.Err(); err != nil {
+			log.Printf("supplier report rows: %v", err)
+			http.Error(w, "failed to load report", http.StatusInternalServerError)
+			return
+		}
+
+		if err := tmpl.ExecuteTemplate(w, "reports_suppliers.html", data); err != nil {
+			log.Printf("render reports_suppliers: %v", err)
+		}
+	}
 }

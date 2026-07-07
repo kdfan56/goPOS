@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Sales by Supplier — goPOS</title>
+<style>
+  body {
+    margin: 0; background: #f2f3f3; color: #16191f;
+    font-family: "Amazon Ember", "Helvetica Neue", Roboto, Arial, sans-serif;
+  }
+  .gp-content { max-width: 960px; margin: 0 auto; padding: 1.5rem 1rem; }
+  h1 { margin: 0 0 0.5rem; font-size: 1.5rem; font-weight: 700; }
+  .breadcrumb { color: #5f6b7a; font-size: 0.875rem; margin-bottom: 1rem; }
+  .breadcrumb a { color: #0972d3; text-decoration: none; }
+  .breadcrumb a:hover { text-decoration: underline; }
+
+  .date-form { display: flex; gap: 0.5rem; align-items: center; margin-bottom: 1rem; flex-wrap: wrap; }
+  .date-form label { font-weight: 700; font-size: 0.9rem; }
+  .date-form input { padding: 0.45rem 0.6rem; font-size: 0.9rem; font-family: inherit; border: 1px solid #aab7b8; border-radius: 0; }
+  .date-form button {
+    padding: 0.45rem 1rem; font-size: 0.9rem; font-family: inherit; font-weight: 700;
+    background: #ec7211; color: #fff; border: 1px solid #ec7211; border-radius: 0; cursor: pointer;
+  }
+  .date-form button:hover { background: #eb5f07; }
+
+  table { width: 100%; border-collapse: collapse; background: #fff; border: 1px solid #d5dbdb; }
+  th, td { padding: 0.7rem 1rem; text-align: left; border-bottom: 1px solid #e9ebed; font-size: 0.875rem; }
+  th { background: #fafafa; color: #414d5c; font-weight: 700; border-bottom: 1px solid #d5dbdb; }
+  td.right, th.right { text-align: right; }
+  tr:last-child td { border-bottom: none; }
+  tfoot td { background: #fafafa; font-weight: 700; border-top: 2px solid #d5dbdb; border-bottom: none; }
+  .profit-pos { color: #037f0c; }
+  .profit-neg { color: #d91515; }
+  .empty { color: #5f6b7a; text-align: center; padding: 2rem; font-style: italic; }
+</style>
+</head>
+<body>
+{{template "nav"}}
+<div class="gp-content">
+<div class="breadcrumb"><a href="/reports">← Sales Report</a></div>
+<h1>Sales by Supplier</h1>
+
+<form class="date-form" method="GET" action="/reports/suppliers">
+  <label for="from">From</label>
+  <input id="from" name="from" type="date" value="{{.FromDate}}">
+  <label for="to">To</label>
+  <input id="to" name="to" type="date" value="{{.ToDate}}">
+  <button type="submit">Apply</button>
+</form>
+
+{{if .Rows}}
+<table>
+  <thead>
+    <tr>
+      <th>Supplier</th>
+      <th class="right">Units Sold</th>
+      <th class="right">Revenue (Rs.)</th>
+      <th class="right">Cost (Rs.)</th>
+      <th class="right">Profit (Rs.)</th>
+    </tr>
+  </thead>
+  <tbody>
+    {{range .Rows}}
+    <tr>
+      <td>{{.Supplier}}</td>
+      <td class="right">{{.Qty}}</td>
+      <td class="right">{{.RevenueRs}}</td>
+      <td class="right">{{.CostRs}}</td>
+      <td class="right {{if ge .ProfitRs 0}}profit-pos{{else}}profit-neg{{end}}">{{.ProfitRs}}</td>
+    </tr>
+    {{end}}
+  </tbody>
+  <tfoot>
+    <tr>
+      <td><strong>Total</strong></td>
+      <td class="right"><strong>{{.GrandQty}}</strong></td>
+      <td class="right"><strong>{{.GrandRev}}</strong></td>
+      <td class="right"><strong>{{.GrandCost}}</strong></td>
+      <td class="right {{if ge .GrandProfit 0}}profit-pos{{else}}profit-neg{{end}}"><strong>{{.GrandProfit}}</strong></td>
+    </tr>
+  </tfoot>
+</table>
+{{else}}
+<p class="empty">No transactions in this date range yet.</p>
+{{end}}
+</div>
+</body>
+</html>
