@@ -46,6 +46,15 @@ test.describe('Smoke tests — key pages load correctly', () => {
     await expect(page.locator('table').first()).toBeVisible();
   });
 
+  test('categories report page loads', async ({ page }) => {
+    await page.goto('/reports/categories');
+    await expect(page.locator('h1')).toContainText(/Sales by Category/);
+    await expect(page.locator('input[name="from"]')).toBeVisible();
+    await expect(page.locator('input[name="to"]')).toBeVisible();
+    // Should show empty state (no sales in seed data)
+    await expect(page.locator('.empty')).toBeVisible();
+  });
+
   test('receiving page loads', async ({ page }) => {
     await page.goto('/receiving');
     await expect(page.locator('h1')).toContainText(/Receiving/);
