@@ -22,3 +22,6 @@ launch.sh
 # Personal reference / scratchpad docs — not part of the POS codebase.
 EXAMPLES.md
 KARPATHY.md
+
+# AI tool internal state
+.reasonix/
