@@ -278,10 +278,17 @@ func scanHandler(db *sql.DB) http.HandlerFunc {
 			return
 		}
 
+		// Match either the UPC-A or EAN-13 form: an imported 12-digit product is
+		// found whether scanned as 12 or 13 digits. alt falls back to the same
+		// value when there's no equivalent, so the OR is harmless.
+		alt := altBarcode(req.Barcode)
+		if alt == "" {
+			alt = req.Barcode
+		}
 		var p Product
 		err := db.QueryRow(
-			"SELECT id, barcode, name, price_rupees, stock, COALESCE(category,'') FROM products WHERE barcode = ?",
-			req.Barcode,
+			"SELECT id, barcode, name, price_rupees, stock, COALESCE(category,'') FROM products WHERE barcode = ? OR barcode = ?",
+			req.Barcode, alt,
 		).Scan(&p.ID, &p.Barcode, &p.Name, &p.PriceRupees, &p.Stock, &p.Category)
 
 		if errors.Is(err, sql.ErrNoRows) {
@@ -1454,9 +1461,14 @@ func receivingScanHandler(db *sql.DB) http.HandlerFunc {
 			return
 		}
 
+		alt := altBarcode(barcode)
+		if alt == "" {
+			alt = barcode
+		}
+
 		var productID int
 		var name string
-		err = db.QueryRow("SELECT id, name FROM products WHERE barcode = ?", barcode).Scan(&productID, &name)
+		err = db.QueryRow("SELECT id, name FROM products WHERE barcode = ? OR barcode = ?", barcode, alt).Scan(&productID, &name)
 		if errors.Is(err, sql.ErrNoRows) {
 			writeJSONError(w, http.StatusNotFound, "barcode not found")
 			return
@@ -1893,6 +1905,41 @@ func validateBarcodeLength(s string) error {
 	return nil
 }
 
+// validateBarcodeCheckDigit verifies the GS1 mod-10 checksum (last digit).
+// Works for EAN-8, UPC-A (12), EAN-13, ITF-14: the rightmost data digit always
+// gets weight 3, alternating 3,1,3,1 leftward. Call after validateBarcodeLength;
+// assumes digits-only input (normalizeBarcode guarantees this).
+func validateBarcodeCheckDigit(s string) error {
+	n := len(s)
+	sum := 0
+	for i := 0; i < n-1; i++ {
+		d := int(s[n-2-i] - '0')
+		if i%2 == 0 {
+			sum += d * 3
+		} else {
+			sum += d
+		}
+	}
+	expected := (10 - sum%10) % 10
+	if expected != int(s[n-1]-'0') {
+		return fmt.Errorf("barcode check digit is wrong (expected last digit %d)", expected)
+	}
+	return nil
+}
+
+// altBarcode returns the equivalent UPC-A/EAN-13 form of a barcode, or "".
+// A 12-digit UPC-A equals the 13-digit EAN-13 with a leading zero, and vice versa.
+// Used on the read side so a scanned code matches whichever form is stored.
+func altBarcode(code string) string {
+	if len(code) == 12 {
+		return "0" + code
+	}
+	if len(code) == 13 && code[0] == '0' {
+		return code[1:]
+	}
+	return ""
+}
+
 func recordMovement(ctx context.Context, tx *sql.Tx, productID, delta, newStock int, reason string) error {
 	_, err := tx.ExecContext(ctx,
 		"INSERT INTO stock_movements (product_id, delta, new_stock, reason) VALUES (?, ?, ?, ?)",
@@ -1988,7 +2035,27 @@ func createProductHandler(db *sql.DB, tmpl *template.Template) http.HandlerFunc 
 			fail(strings.ToUpper(err.Error()[:1]) + err.Error()[1:])
 			return
 		}
+		if err := validateBarcodeCheckDigit(normalized); err != nil {
+			fail(strings.ToUpper(err.Error()[:1]) + err.Error()[1:])
+			return
+		}
 		form.Barcode = normalized
+
+		// Reject the UPC-A/EAN-13 twin of an existing product. The read side matches
+		// either form, so storing both would make one physical item resolve to two rows.
+		if alt := altBarcode(normalized); alt != "" {
+			var one int
+			err := db.QueryRow("SELECT 1 FROM products WHERE barcode = ?", alt).Scan(&one)
+			if err == nil {
+				fail("A product with the equivalent UPC-A/EAN-13 barcode already exists")
+				return
+			}
+			if !errors.Is(err, sql.ErrNoRows) {
+				log.Printf("twin barcode check: %v", err)
+				fail("Failed to add product")
+				return
+			}
+		}
 		if form.Name == "" {
 			fail("Name is required")
 			return
