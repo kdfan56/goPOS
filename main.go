@@ -113,6 +113,8 @@ func main() {
 	mux.HandleFunc("GET /reports/categories", reportsCategoriesHandler(db, tmpl))
 	mux.HandleFunc("GET /reports/itemwise", reportsItemwiseHandler(db, tmpl))
 	mux.HandleFunc("GET /reports/itemwise/csv", reportsItemwiseCSVHandler(db))
+	mux.HandleFunc("GET /reports/purchases", reportsPurchasesHandler(db, tmpl))
+	mux.HandleFunc("GET /reports/purchases/csv", reportsPurchasesCSVHandler(db))
 	mux.HandleFunc("GET /receiving", receivingListHandler(db, tmpl))
 	mux.HandleFunc("POST /receiving/new", createReceivingSessionHandler(db, tmpl))
 	mux.HandleFunc("GET /receiving/{id}", receivingDetailHandler(db, tmpl))
@@ -2706,6 +2708,159 @@ func reportsItemwiseCSVHandler(db *sql.DB) http.HandlerFunc {
 			grandPct = fmt.Sprintf("%.1f%%", 100*float64(totals.MarginRs)/float64(totals.SaleRs))
 		}
 		cw.Write([]string{"TOTAL", strconv.Itoa(totals.Qty), strconv.Itoa(totals.SaleRs), strconv.Itoa(totals.CostRs), strconv.Itoa(totals.MarginRs), grandPct, ""})
+		cw.Flush()
+	}
+}
+
+type PurchaseRow struct {
+	SessionID   int
+	Label       string
+	Supplier    string
+	FinalizedAt string
+	Qty         int
+	CostRs      int
+	SaleRs      int
+	MarginRs    int
+	MarginPct   string // "18.2%" or "—" when the sale total is 0
+	Note        string // "" or "incomplete" when a line has no cost price
+}
+
+type purchaseTotals struct {
+	Qty       int
+	CostRs    int
+	SaleRs    int
+	MarginRs  int
+	NotedRows int
+}
+
+// queryPurchases is shared by the HTML page and the CSV export.
+// One row per finalized receiving session in the date range.
+//
+// CAVEAT: receiving_session_items stores only qty, so the cost and the sale
+// totals use the product's CURRENT cost_price_rupees and price_rupees. A price
+// change after the shipment moves these numbers. This is a shipment-margin
+// snapshot, not a historical record. See decision 20.
+func queryPurchases(db *sql.DB, fromISO, toISO string) ([]PurchaseRow, purchaseTotals, error) {
+	rows, err := db.Query(`
+		SELECT rs.id, rs.label, COALESCE(s.name, 'Unassigned'), rs.finalized_at,
+		       COALESCE(SUM(rsi.qty), 0),
+		       COALESCE(SUM(rsi.qty * p.cost_price_rupees), 0),
+		       COALESCE(SUM(rsi.qty * p.price_rupees), 0),
+		       COALESCE(SUM(CASE WHEN p.cost_price_rupees IS NULL THEN 1 ELSE 0 END), 0)
+		FROM receiving_sessions rs
+		LEFT JOIN suppliers s ON s.id = rs.supplier_id
+		LEFT JOIN receiving_session_items rsi ON rsi.session_id = rs.id
+		LEFT JOIN products p ON p.id = rsi.product_id
+		WHERE rs.status = 'finalized'
+		  AND date(rs.finalized_at, '+5 hours') BETWEEN ? AND ?
+		GROUP BY rs.id
+		ORDER BY rs.finalized_at DESC
+	`, fromISO, toISO)
+	if err != nil {
+		return nil, purchaseTotals{}, err
+	}
+	defer rows.Close()
+
+	var out []PurchaseRow
+	var totals purchaseTotals
+	for rows.Next() {
+		var pr PurchaseRow
+		var finalizedAt sql.NullTime
+		var noCostLines int
+		if err := rows.Scan(&pr.SessionID, &pr.Label, &pr.Supplier, &finalizedAt,
+			&pr.Qty, &pr.CostRs, &pr.SaleRs, &noCostLines); err != nil {
+			return nil, purchaseTotals{}, err
+		}
+		if finalizedAt.Valid {
+			pr.FinalizedAt = finalizedAt.Time.In(storeLocation).Format("2 Jan 2006, 3:04 PM")
+		}
+		pr.MarginRs = pr.SaleRs - pr.CostRs
+		if pr.SaleRs != 0 {
+			pr.MarginPct = fmt.Sprintf("%.1f%%", 100*float64(pr.MarginRs)/float64(pr.SaleRs))
+		} else {
+			pr.MarginPct = "—"
+		}
+		if noCostLines > 0 {
+			pr.Note = "incomplete"
+			totals.NotedRows++
+		}
+		totals.Qty += pr.Qty
+		totals.CostRs += pr.CostRs
+		totals.SaleRs += pr.SaleRs
+		totals.MarginRs += pr.MarginRs
+		out = append(out, pr)
+	}
+	return out, totals, rows.Err()
+}
+
+type reportsPurchasesPageData struct {
+	Rows     []PurchaseRow
+	FromDate string
+	ToDate   string
+	Totals   purchaseTotals
+	GrandPct string
+}
+
+func reportsPurchasesHandler(db *sql.DB, tmpl *template.Template) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		from, to := parseDateRange(r)
+		fromISO := from.Format("2006-01-02")
+		toISO := to.Format("2006-01-02")
+
+		purchases, totals, err := queryPurchases(db, fromISO, toISO)
+		if err != nil {
+			log.Printf("purchases report query: %v", err)
+			http.Error(w, "failed to load report", http.StatusInternalServerError)
+			return
+		}
+
+		data := reportsPurchasesPageData{Rows: purchases, FromDate: fromISO, ToDate: toISO, Totals: totals, GrandPct: "—"}
+		if totals.SaleRs != 0 {
+			data.GrandPct = fmt.Sprintf("%.1f%%", 100*float64(totals.MarginRs)/float64(totals.SaleRs))
+		}
+		if err := tmpl.ExecuteTemplate(w, "reports_purchases.html", data); err != nil {
+			log.Printf("render reports_purchases: %v", err)
+		}
+	}
+}
+
+func reportsPurchasesCSVHandler(db *sql.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		from, to := parseDateRange(r)
+		fromISO := from.Format("2006-01-02")
+		toISO := to.Format("2006-01-02")
+
+		purchases, totals, err := queryPurchases(db, fromISO, toISO)
+		if err != nil {
+			log.Printf("purchases csv query: %v", err)
+			http.Error(w, "failed to export", http.StatusInternalServerError)
+			return
+		}
+
+		filename := fmt.Sprintf("purchases-%s-to-%s.csv", fromISO, toISO)
+		w.Header().Set("Content-Type", "text/csv")
+		w.Header().Set("Content-Disposition", `attachment; filename="`+filename+`"`)
+
+		cw := csv.NewWriter(w)
+		cw.Write([]string{"Finalized", "Shipment", "Supplier", "Qty", "Cost (Rs.)", "Sale (Rs.)", "Margin (Rs.)", "Margin %", "Cost Note"})
+		for _, pr := range purchases {
+			cw.Write([]string{
+				pr.FinalizedAt,
+				pr.Label,
+				pr.Supplier,
+				strconv.Itoa(pr.Qty),
+				strconv.Itoa(pr.CostRs),
+				strconv.Itoa(pr.SaleRs),
+				strconv.Itoa(pr.MarginRs),
+				pr.MarginPct,
+				pr.Note,
+			})
+		}
+		grandPct := "—"
+		if totals.SaleRs != 0 {
+			grandPct = fmt.Sprintf("%.1f%%", 100*float64(totals.MarginRs)/float64(totals.SaleRs))
+		}
+		cw.Write([]string{"", "TOTAL", "", strconv.Itoa(totals.Qty), strconv.Itoa(totals.CostRs), strconv.Itoa(totals.SaleRs), strconv.Itoa(totals.MarginRs), grandPct, ""})
 		cw.Flush()
 	}
 }

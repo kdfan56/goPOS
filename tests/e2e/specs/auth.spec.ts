@@ -125,6 +125,14 @@ test.describe('Authentication and Role Access', () => {
       await ctx.close();
     });
 
+    test('cannot access purchases report (403)', async ({ browser }) => {
+      const ctx = await authContext(browser, CASHIER);
+      const page = await ctx.newPage();
+      const resp = await page.goto('/reports/purchases');
+      expect(resp?.status()).toBe(403);
+      await ctx.close();
+    });
+
     test('cannot access suppliers page (403)', async ({ browser }) => {
       const ctx = await authContext(browser, CASHIER);
       const page = await ctx.newPage();

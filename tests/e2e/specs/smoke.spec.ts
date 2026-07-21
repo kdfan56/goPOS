@@ -55,6 +55,26 @@ test.describe('Smoke tests — key pages load correctly', () => {
     await expect(page.locator('.empty')).toBeVisible();
   });
 
+  test('itemwise margin report page loads', async ({ page }) => {
+    await page.goto('/reports/itemwise');
+    await expect(page.locator('h1')).toContainText(/Itemwise Margin/);
+    await expect(page.locator('input[name="from"]')).toBeVisible();
+    await expect(page.locator('input[name="to"]')).toBeVisible();
+    // Seed data has no sales, so the empty state shows
+    await expect(page.locator('.empty')).toBeVisible();
+  });
+
+  test('purchases report page loads', async ({ page }) => {
+    await page.goto('/reports/purchases');
+    await expect(page.locator('h1')).toContainText(/Purchases/);
+    await expect(page.locator('input[name="from"]')).toBeVisible();
+    await expect(page.locator('input[name="to"]')).toBeVisible();
+    // The current-price caveat must always be on the page, not only when rows exist
+    await expect(page.locator('.caveat')).toBeVisible();
+    // Seed data has no finalized receiving sessions, so the empty state shows
+    await expect(page.locator('.empty')).toBeVisible();
+  });
+
   test('receiving page loads', async ({ page }) => {
     await page.goto('/receiving');
     await expect(page.locator('h1')).toContainText(/Receiving/);
