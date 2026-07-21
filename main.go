@@ -45,7 +45,14 @@ func main() {
 	}
 	storeLocation = loc
 
-	db, err := sql.Open("sqlite", "pos.db")
+	// _txlock=immediate is the important half. Every BeginTx in this file is a writer,
+	// and they all read first and write second. With the default deferred locking, two
+	// terminals both take a read lock, then BOTH fail to upgrade to a write lock —
+	// SQLite skips the busy handler on that upgrade to avoid deadlock, so busy_timeout
+	// alone does nothing there. Measured: both transactions lost their work.
+	// With immediate, the second writer blocks at BEGIN, waits out busy_timeout, and
+	// then runs with a fresh read. Serialized, and nobody's refund disappears.
+	db, err := sql.Open("sqlite", "pos.db?_txlock=immediate&_pragma=busy_timeout(5000)")
 	if err != nil {
 		log.Fatalf("open db: %v", err)
 	}
@@ -77,6 +84,9 @@ func main() {
 		`ALTER TABLE products ADD COLUMN reorder_level INTEGER`,
 		`ALTER TABLE products ADD COLUMN reorder_qty INTEGER`,
 		`ALTER TABLE transaction_items ADD COLUMN cost_price_at_sale_rupees INTEGER`,
+		// SQLite DOES accept a CHECK on ADD COLUMN — verified against this driver.
+		`ALTER TABLE transactions ADD COLUMN kind TEXT NOT NULL DEFAULT 'sale' CHECK(kind IN ('sale','return'))`,
+		`ALTER TABLE transactions ADD COLUMN original_transaction_id INTEGER REFERENCES transactions(id)`,
 	} {
 		if _, err := db.Exec(col); err != nil && !strings.Contains(err.Error(), "duplicate column") {
 			log.Fatalf("migrate: %v", err)
@@ -105,6 +115,9 @@ func main() {
 	mux.HandleFunc("GET /scan", scanPageHandler(tmpl))
 	mux.HandleFunc("POST /pos/checkout", checkoutHandler(db))
 	mux.HandleFunc("GET /receipt/{id}", receiptHandler(db, tmpl))
+	mux.HandleFunc("GET /pos/return", returnPageHandler(tmpl))
+	mux.HandleFunc("POST /pos/return/lookup", returnLookupHandler(db))
+	mux.HandleFunc("POST /pos/return/submit", returnSubmitHandler(db))
 	mux.HandleFunc("POST /stock/update", stockUpdateHandler(db))
 	mux.HandleFunc("GET /reports", reportsHandler(db, tmpl))
 	mux.HandleFunc("GET /reports/csv", reportsCSVHandler(db))
@@ -192,7 +205,11 @@ func credMatch(u, p, wantUser, wantPass string) bool {
 // anything not listed here is admin-only
 func cashierAllowed(path string) bool {
 	switch path {
-	case "/", "/pos", "/price-check", "/pos/scan", "/pos/checkout":
+	// Returns are on this list deliberately (decision 22). The owner is not always
+	// in the store, and a refund is a routine counter task. The accepted risk and
+	// its mitigations are written down in that decision file.
+	case "/", "/pos", "/price-check", "/pos/scan", "/pos/checkout",
+		"/pos/return", "/pos/return/lookup", "/pos/return/submit":
 		return true
 	}
 
@@ -506,6 +523,8 @@ type Receipt struct {
 	TotalRupees   int
 	ItemCount     int
 	Items         []ReceiptItem
+	IsReturn      bool
+	OriginalID    int // only set when IsReturn; links back to the sale being reversed
 }
 
 func receiptHandler(db *sql.DB, tmpl *template.Template) http.HandlerFunc {
@@ -518,10 +537,12 @@ func receiptHandler(db *sql.DB, tmpl *template.Template) http.HandlerFunc {
 
 		rcpt := Receipt{TransactionID: id}
 		var createdAt time.Time
+		var kind string
+		var originalID sql.NullInt64
 		err = db.QueryRow(
-			"SELECT total_rupees, payment_method, created_at FROM transactions WHERE id = ?",
+			"SELECT total_rupees, payment_method, created_at, kind, original_transaction_id FROM transactions WHERE id = ?",
 			id,
-		).Scan(&rcpt.TotalRupees, &rcpt.PaymentMethod, &createdAt)
+		).Scan(&rcpt.TotalRupees, &rcpt.PaymentMethod, &createdAt, &kind, &originalID)
 		if errors.Is(err, sql.ErrNoRows) {
 			http.Error(w, "receipt not found", http.StatusNotFound)
 			return
@@ -532,6 +553,10 @@ func receiptHandler(db *sql.DB, tmpl *template.Template) http.HandlerFunc {
 			return
 		}
 		rcpt.CreatedAt = createdAt.In(storeLocation).Format("2 Jan 2006, 3:04 PM")
+		rcpt.IsReturn = kind == "return"
+		if originalID.Valid {
+			rcpt.OriginalID = int(originalID.Int64)
+		}
 
 		rows, err := db.Query(
 			`SELECT p.name, ti.quantity, ti.unit_price_rupees, ti.line_total_rupees
@@ -558,6 +583,11 @@ func receiptHandler(db *sql.DB, tmpl *template.Template) http.HandlerFunc {
 			rcpt.Items = append(rcpt.Items, it)
 			rcpt.ItemCount += it.Quantity
 		}
+		// Return quantities are stored negative (decision 19). "Items -2" on a slip
+		// reads as a mistake, so show how many came back, not the signed sum.
+		if rcpt.IsReturn {
+			rcpt.ItemCount = -rcpt.ItemCount
+		}
 
 		if err := tmpl.ExecuteTemplate(w, "receipt.html", rcpt); err != nil {
 			log.Printf("render receipt: %v", err)
@@ -565,6 +595,8 @@ func receiptHandler(db *sql.DB, tmpl *template.Template) http.HandlerFunc {
 	}
 }
 
+// TxnCount counts SALES ONLY (decision 21). ReturnCount is shown beside it, never folded in.
+// The money fields net returns automatically, because a return row carries a negative total.
 type DailySales struct {
 	Date        string
 	Display     string
@@ -573,6 +605,7 @@ type DailySales struct {
 	CardRupees  int
 	TotalRupees int
 	TxnCount    int
+	ReturnCount int
 }
 
 type HourSales struct {
@@ -582,17 +615,19 @@ type HourSales struct {
 	CardRupees  int
 	TotalRupees int
 	TxnCount    int
+	ReturnCount int
 }
 
 type ReportsPageData struct {
-	Days       []DailySales
-	GrandCash  int
-	GrandCard  int
-	GrandTotal int
-	GrandCount int
-	FromDate   string
-	ToDate     string
-	HourRows   []HourSales
+	Days        []DailySales
+	GrandCash   int
+	GrandCard   int
+	GrandTotal  int
+	GrandCount  int
+	GrandReturn int
+	FromDate    string
+	ToDate      string
+	HourRows    []HourSales
 }
 
 type productDaySales struct {
@@ -704,7 +739,8 @@ func reportsHandler(db *sql.DB, tmpl *template.Template) http.HandlerFunc {
 			       SUM(CASE WHEN payment_method = 'cash' THEN total_rupees ELSE 0 END),
 			       SUM(CASE WHEN payment_method = 'card' THEN total_rupees ELSE 0 END),
 			       SUM(total_rupees),
-			       COUNT(*)
+			       SUM(CASE WHEN kind = 'sale' THEN 1 ELSE 0 END),
+			       SUM(CASE WHEN kind = 'return' THEN 1 ELSE 0 END)
 			FROM transactions
 			WHERE date(created_at, '+5 hours') BETWEEN ? AND ?
 			GROUP BY day
@@ -717,8 +753,8 @@ func reportsHandler(db *sql.DB, tmpl *template.Template) http.HandlerFunc {
 		defer rows.Close()
 		for rows.Next() {
 			var day string
-			var cash, card, total, count int
-			if err := rows.Scan(&day, &cash, &card, &total, &count); err != nil {
+			var cash, card, total, count, returns int
+			if err := rows.Scan(&day, &cash, &card, &total, &count, &returns); err != nil {
 				log.Printf("reports scan: %v", err)
 				http.Error(w, "failed to load report", http.StatusInternalServerError)
 				return
@@ -728,6 +764,7 @@ func reportsHandler(db *sql.DB, tmpl *template.Template) http.HandlerFunc {
 				ds.CardRupees = card
 				ds.TotalRupees = total
 				ds.TxnCount = count
+				ds.ReturnCount = returns
 			}
 		}
 
@@ -739,6 +776,7 @@ func reportsHandler(db *sql.DB, tmpl *template.Template) http.HandlerFunc {
 			data.GrandCard += ds.CardRupees
 			data.GrandTotal += ds.TotalRupees
 			data.GrandCount += ds.TxnCount
+			data.GrandReturn += ds.ReturnCount
 		}
 
 		hourRows, err := db.Query(`
@@ -746,7 +784,8 @@ func reportsHandler(db *sql.DB, tmpl *template.Template) http.HandlerFunc {
 			       SUM(CASE WHEN payment_method = 'cash' THEN total_rupees ELSE 0 END),
 			       SUM(CASE WHEN payment_method = 'card' THEN total_rupees ELSE 0 END),
 			       SUM(total_rupees),
-			       COUNT(*)
+			       SUM(CASE WHEN kind = 'sale' THEN 1 ELSE 0 END),
+			       SUM(CASE WHEN kind = 'return' THEN 1 ELSE 0 END)
 			FROM transactions
 			WHERE date(created_at, '+5 hours') BETWEEN ? AND ?
 			GROUP BY hr
@@ -760,7 +799,7 @@ func reportsHandler(db *sql.DB, tmpl *template.Template) http.HandlerFunc {
 		defer hourRows.Close()
 		for hourRows.Next() {
 			var hs HourSales
-			if err := hourRows.Scan(&hs.Hour, &hs.CashRupees, &hs.CardRupees, &hs.TotalRupees, &hs.TxnCount); err != nil {
+			if err := hourRows.Scan(&hs.Hour, &hs.CashRupees, &hs.CardRupees, &hs.TotalRupees, &hs.TxnCount, &hs.ReturnCount); err != nil {
 				log.Printf("reports hour scan: %v", err)
 				http.Error(w, "failed to load report", http.StatusInternalServerError)
 				return
@@ -788,7 +827,8 @@ func reportsCSVHandler(db *sql.DB) http.HandlerFunc {
 			       SUM(CASE WHEN payment_method = 'cash' THEN total_rupees ELSE 0 END),
 			       SUM(CASE WHEN payment_method = 'card' THEN total_rupees ELSE 0 END),
 			       SUM(total_rupees),
-			       COUNT(*)
+			       SUM(CASE WHEN kind = 'sale' THEN 1 ELSE 0 END),
+			       SUM(CASE WHEN kind = 'return' THEN 1 ELSE 0 END)
 			FROM transactions
 			WHERE date(created_at, '+5 hours') BETWEEN ? AND ?
 			GROUP BY day
@@ -801,8 +841,8 @@ func reportsCSVHandler(db *sql.DB) http.HandlerFunc {
 		defer rows.Close()
 		for rows.Next() {
 			var day string
-			var cash, card, total, count int
-			if err := rows.Scan(&day, &cash, &card, &total, &count); err != nil {
+			var cash, card, total, count, returns int
+			if err := rows.Scan(&day, &cash, &card, &total, &count, &returns); err != nil {
 				log.Printf("csv scan: %v", err)
 				http.Error(w, "failed to export", http.StatusInternalServerError)
 				return
@@ -812,6 +852,7 @@ func reportsCSVHandler(db *sql.DB) http.HandlerFunc {
 				ds.CardRupees = card
 				ds.TotalRupees = total
 				ds.TxnCount = count
+				ds.ReturnCount = returns
 			}
 		}
 
@@ -820,8 +861,9 @@ func reportsCSVHandler(db *sql.DB) http.HandlerFunc {
 		w.Header().Set("Content-Disposition", `attachment; filename="`+filename+`"`)
 
 		cw := csv.NewWriter(w)
-		cw.Write([]string{"Date", "Cash (Rs.)", "Card (Rs.)", "Total (Rs.)", "Transactions"})
-		var grandCash, grandCard, grandTotal, grandCount int
+		// Transactions counts sales only; Returns is its own column (decision 21).
+		cw.Write([]string{"Date", "Cash (Rs.)", "Card (Rs.)", "Total (Rs.)", "Transactions", "Returns"})
+		var grandCash, grandCard, grandTotal, grandCount, grandReturn int
 		for _, iso := range ordered {
 			ds := *daysMap[iso]
 			cw.Write([]string{
@@ -830,13 +872,15 @@ func reportsCSVHandler(db *sql.DB) http.HandlerFunc {
 				strconv.Itoa(ds.CardRupees),
 				strconv.Itoa(ds.TotalRupees),
 				strconv.Itoa(ds.TxnCount),
+				strconv.Itoa(ds.ReturnCount),
 			})
 			grandCash += ds.CashRupees
 			grandCard += ds.CardRupees
 			grandTotal += ds.TotalRupees
 			grandCount += ds.TxnCount
+			grandReturn += ds.ReturnCount
 		}
-		cw.Write([]string{"TOTAL", strconv.Itoa(grandCash), strconv.Itoa(grandCard), strconv.Itoa(grandTotal), strconv.Itoa(grandCount)})
+		cw.Write([]string{"TOTAL", strconv.Itoa(grandCash), strconv.Itoa(grandCard), strconv.Itoa(grandTotal), strconv.Itoa(grandCount), strconv.Itoa(grandReturn)})
 		cw.Flush()
 	}
 }
@@ -923,6 +967,7 @@ type dashboardTopItem struct {
 type dashboardData struct {
 	TodaySalesRs  string
 	TodayCount    int
+	TodayReturns  int
 	MonthLabel    string
 	MonthSalesRs  string
 	LowStockCount int
@@ -932,6 +977,7 @@ type dashboardData struct {
 	GrandCard     int
 	GrandTotal    int
 	GrandCount    int
+	GrandReturn   int
 }
 
 func formatRupees(n int) string {
@@ -967,12 +1013,14 @@ func dashboardHandler(db *sql.DB, tmpl *template.Template) http.HandlerFunc {
 		todayISO := today.Format("2006-01-02")
 		monthKey := nowLocal.Format("2006-01")
 
-		var todayTotal, todayCount int
+		var todayTotal, todayCount, todayReturns int
 		err := db.QueryRow(
-			`SELECT COALESCE(SUM(total_rupees), 0), COUNT(*)
+			`SELECT COALESCE(SUM(total_rupees), 0),
+			        COALESCE(SUM(CASE WHEN kind = 'sale' THEN 1 ELSE 0 END), 0),
+			        COALESCE(SUM(CASE WHEN kind = 'return' THEN 1 ELSE 0 END), 0)
 			 FROM transactions
 			 WHERE date(created_at, '+5 hours') = ?`, todayISO,
-		).Scan(&todayTotal, &todayCount)
+		).Scan(&todayTotal, &todayCount, &todayReturns)
 		if err != nil {
 			log.Printf("dashboard today query: %v", err)
 			http.Error(w, "failed to load dashboard", http.StatusInternalServerError)
@@ -998,6 +1046,7 @@ func dashboardHandler(db *sql.DB, tmpl *template.Template) http.HandlerFunc {
 			 JOIN products p ON p.id = ti.product_id
 			 WHERE date(t.created_at, '+5 hours') >= date(?, '-6 days')
 			 GROUP BY p.id
+			 HAVING qty > 0
 			 ORDER BY qty DESC, revenue DESC
 			 LIMIT 5`, todayISO,
 		)
@@ -1052,7 +1101,8 @@ func dashboardHandler(db *sql.DB, tmpl *template.Template) http.HandlerFunc {
 			       SUM(CASE WHEN payment_method = 'cash' THEN total_rupees ELSE 0 END),
 			       SUM(CASE WHEN payment_method = 'card' THEN total_rupees ELSE 0 END),
 			       SUM(total_rupees),
-			       COUNT(*)
+			       SUM(CASE WHEN kind = 'sale' THEN 1 ELSE 0 END),
+			       SUM(CASE WHEN kind = 'return' THEN 1 ELSE 0 END)
 			FROM transactions
 			WHERE date(created_at, '+5 hours') >= date(?, '-6 days')
 			GROUP BY day
@@ -1065,8 +1115,8 @@ func dashboardHandler(db *sql.DB, tmpl *template.Template) http.HandlerFunc {
 		defer reportRows.Close()
 		for reportRows.Next() {
 			var day string
-			var cash, card, total, count int
-			if err := reportRows.Scan(&day, &cash, &card, &total, &count); err != nil {
+			var cash, card, total, count, returns int
+			if err := reportRows.Scan(&day, &cash, &card, &total, &count, &returns); err != nil {
 				log.Printf("dashboard report scan: %v", err)
 				http.Error(w, "failed to load dashboard", http.StatusInternalServerError)
 				return
@@ -1076,12 +1126,14 @@ func dashboardHandler(db *sql.DB, tmpl *template.Template) http.HandlerFunc {
 				ds.CardRupees = card
 				ds.TotalRupees = total
 				ds.TxnCount = count
+				ds.ReturnCount = returns
 			}
 		}
 		reportDays := make([]DailySales, 0, 7)
 		data := dashboardData{
 			TodaySalesRs:  formatRupees(todayTotal),
 			TodayCount:    todayCount,
+			TodayReturns:  todayReturns,
 			MonthLabel:    nowLocal.Format("Jan 2006"),
 			MonthSalesRs:  formatRupees(monthTotal),
 			LowStockCount: lowStockCount,
@@ -1094,6 +1146,7 @@ func dashboardHandler(db *sql.DB, tmpl *template.Template) http.HandlerFunc {
 			data.GrandCard += ds.CardRupees
 			data.GrandTotal += ds.TotalRupees
 			data.GrandCount += ds.TxnCount
+			data.GrandReturn += ds.ReturnCount
 		}
 		data.ReportDays = reportDays
 
@@ -2862,5 +2915,375 @@ func reportsPurchasesCSVHandler(db *sql.DB) http.HandlerFunc {
 		}
 		cw.Write([]string{"", "TOTAL", "", strconv.Itoa(totals.Qty), strconv.Itoa(totals.CostRs), strconv.Itoa(totals.SaleRs), strconv.Itoa(totals.MarginRs), grandPct, ""})
 		cw.Flush()
+	}
+}
+
+// ── Phase E: returns / refunds ───────────────────────────────────────────────
+//
+// Sign convention is LOCKED by decision 19 and must not be changed casually:
+// a return line stores a NEGATIVE quantity and a NEGATIVE line_total_rupees, but
+// keeps unit_price_rupees and cost_price_at_sale_rupees POSITIVE. Every plain SUM
+// report in this file then nets returns with no query edit at all.
+//
+// Decision 22 shapes the flow: a return must reference the original sale, the
+// person decides per line whether the goods go back on the shelf, and cashiers
+// are allowed to do this.
+
+type returnLookupLine struct {
+	ProductID       int    `json:"product_id"`
+	Name            string `json:"name"`
+	UnitPriceRupees int    `json:"unit_price_rupees"`
+	QtySold         int    `json:"qty_sold"`
+	QtyReturned     int    `json:"qty_returned"`
+	QtyReturnable   int    `json:"qty_returnable"`
+}
+
+type returnLookupResponse struct {
+	TransactionID int                `json:"transaction_id"`
+	CreatedAt     string             `json:"created_at"`
+	PaymentMethod string             `json:"payment_method"`
+	TotalRupees   int                `json:"total_rupees"`
+	Lines         []returnLookupLine `json:"lines"`
+}
+
+// returnableLines loads one sale and works out how much of each line is still
+// returnable. Shared by the lookup endpoint and the submit endpoint, so the
+// number the cashier sees and the number the server enforces cannot drift.
+//
+// q is either *sql.DB or *sql.Tx — submit passes its transaction so the check and
+// the insert see the same snapshot.
+func returnableLines(ctx context.Context, q interface {
+	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
+}, saleID int) ([]returnLookupLine, error) {
+	// COALESCE(SUM(...)) not a single-row read: transaction_items has no
+	// UNIQUE(transaction_id, product_id), and checkoutHandler inserts one row per
+	// posted cart item. A two-row sale of one product is legal, and reading one row
+	// would under-count it and wrongly block a legitimate return.
+	rows, err := q.QueryContext(ctx, `
+		SELECT ti.product_id,
+		       p.name,
+		       MAX(ti.unit_price_rupees),
+		       SUM(ti.quantity),
+		       COALESCE((
+		           SELECT -SUM(ri.quantity)
+		           FROM transaction_items ri
+		           JOIN transactions rt ON rt.id = ri.transaction_id
+		           WHERE rt.original_transaction_id = ti.transaction_id
+		             AND rt.kind = 'return'
+		             AND ri.product_id = ti.product_id
+		       ), 0)
+		FROM transaction_items ti
+		JOIN products p ON p.id = ti.product_id
+		WHERE ti.transaction_id = ?
+		GROUP BY ti.product_id
+		ORDER BY p.name
+	`, saleID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []returnLookupLine
+	for rows.Next() {
+		var l returnLookupLine
+		if err := rows.Scan(&l.ProductID, &l.Name, &l.UnitPriceRupees, &l.QtySold, &l.QtyReturned); err != nil {
+			return nil, err
+		}
+		l.QtyReturnable = l.QtySold - l.QtyReturned
+		out = append(out, l)
+	}
+	return out, rows.Err()
+}
+
+// loadSaleForReturn fetches a transaction and refuses anything that is not a sale.
+// Returning a return would let somebody pump money out in a loop.
+func loadSaleForReturn(ctx context.Context, q interface {
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}, saleID int) (total int, method string, createdAt time.Time, err error) {
+	var kind string
+	err = q.QueryRowContext(ctx,
+		"SELECT total_rupees, payment_method, created_at, kind FROM transactions WHERE id = ?",
+		saleID,
+	).Scan(&total, &method, &createdAt, &kind)
+	if err != nil {
+		return 0, "", time.Time{}, err
+	}
+	if kind != "sale" {
+		return 0, "", time.Time{}, errNotASale
+	}
+	return total, method, createdAt, nil
+}
+
+var errNotASale = errors.New("transaction is not a sale")
+
+func returnPageHandler(tmpl *template.Template) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if err := tmpl.ExecuteTemplate(w, "return.html", nil); err != nil {
+			log.Printf("render return page: %v", err)
+		}
+	}
+}
+
+func returnLookupHandler(db *sql.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			TransactionID int `json:"transaction_id"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeJSONError(w, http.StatusBadRequest, "bad request")
+			return
+		}
+
+		ctx := r.Context()
+		total, method, createdAt, err := loadSaleForReturn(ctx, db, req.TransactionID)
+		if errors.Is(err, sql.ErrNoRows) {
+			writeJSONError(w, http.StatusNotFound, "no sale with that receipt number")
+			return
+		}
+		if errors.Is(err, errNotASale) {
+			writeJSONError(w, http.StatusBadRequest, "that receipt is a return, not a sale")
+			return
+		}
+		if err != nil {
+			log.Printf("return lookup: %v", err)
+			writeJSONError(w, http.StatusInternalServerError, "lookup failed")
+			return
+		}
+
+		lines, err := returnableLines(ctx, db, req.TransactionID)
+		if err != nil {
+			log.Printf("return lookup lines: %v", err)
+			writeJSONError(w, http.StatusInternalServerError, "lookup failed")
+			return
+		}
+
+		resp := returnLookupResponse{
+			TransactionID: req.TransactionID,
+			CreatedAt:     createdAt.In(storeLocation).Format("2 Jan 2006, 3:04 PM"),
+			PaymentMethod: method,
+			TotalRupees:   total,
+			Lines:         lines,
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(resp)
+	}
+}
+
+type returnSubmitLine struct {
+	ProductID int  `json:"product_id"`
+	Quantity  int  `json:"quantity"`
+	Sellable  bool `json:"sellable"`
+}
+
+type returnSubmitRequest struct {
+	OriginalTransactionID int                `json:"original_transaction_id"`
+	PaymentMethod         string             `json:"payment_method"`
+	Lines                 []returnSubmitLine `json:"lines"`
+}
+
+// returnSubmitHandler writes the refund. Mirrors checkoutHandler: one SQL
+// transaction, every stock change paired with a recordMovement call inside it.
+func returnSubmitHandler(db *sql.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var req returnSubmitRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeJSONError(w, http.StatusBadRequest, "bad request")
+			return
+		}
+		if req.PaymentMethod != "cash" && req.PaymentMethod != "card" {
+			writeJSONError(w, http.StatusBadRequest, "payment_method must be 'cash' or 'card'")
+			return
+		}
+		if len(req.Lines) == 0 {
+			writeJSONError(w, http.StatusBadRequest, "nothing to return")
+			return
+		}
+
+		ctx := r.Context()
+		tx, err := db.BeginTx(ctx, nil)
+		if err != nil {
+			log.Printf("begin return tx: %v", err)
+			writeJSONError(w, http.StatusInternalServerError, "return failed")
+			return
+		}
+		defer tx.Rollback()
+
+		if _, _, _, err := loadSaleForReturn(ctx, tx, req.OriginalTransactionID); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				writeJSONError(w, http.StatusNotFound, "no sale with that receipt number")
+				return
+			}
+			if errors.Is(err, errNotASale) {
+				writeJSONError(w, http.StatusBadRequest, "cannot return a return")
+				return
+			}
+			log.Printf("return load sale: %v", err)
+			writeJSONError(w, http.StatusInternalServerError, "return failed")
+			return
+		}
+
+		// Read the allowance inside the same tx as the insert below.
+		allowed, err := returnableLines(ctx, tx, req.OriginalTransactionID)
+		if err != nil {
+			log.Printf("return allowance: %v", err)
+			writeJSONError(w, http.StatusInternalServerError, "return failed")
+			return
+		}
+		byProduct := make(map[int]returnLookupLine, len(allowed))
+		for _, l := range allowed {
+			byProduct[l.ProductID] = l
+		}
+
+		type refundLine struct {
+			productID   int
+			name        string
+			quantity    int
+			unitPrice   int
+			cost        sql.NullInt64
+			sellable    bool
+			stockBefore int
+		}
+
+		// Fold the request down to one entry per product BEFORE validating.
+		// Checking each posted line on its own lets a caller send the same product
+		// twice and slip past the over-return guard, because both lines compare
+		// against the same untouched allowance. The screen cannot do this — it shows
+		// one row per product — but /pos/return/submit is a JSON endpoint a cashier
+		// can reach directly. Folding first also means one stock read per product,
+		// so two movement rows can never log the same new_stock.
+		type foldedLine struct {
+			quantity int
+			sellable bool
+		}
+		folded := make(map[int]*foldedLine, len(req.Lines))
+		order := make([]int, 0, len(req.Lines))
+		for _, in := range req.Lines {
+			if f, ok := folded[in.ProductID]; ok {
+				f.quantity += in.Quantity
+				// Any line marked not-sellable keeps the whole product off the shelf.
+				f.sellable = f.sellable && in.Sellable
+				continue
+			}
+			folded[in.ProductID] = &foldedLine{quantity: in.Quantity, sellable: in.Sellable}
+			order = append(order, in.ProductID)
+		}
+
+		refunds := make([]refundLine, 0, len(order))
+		total := 0
+
+		for _, productID := range order {
+			in := folded[productID]
+			line, ok := byProduct[productID]
+			if !ok {
+				writeJSONError(w, http.StatusBadRequest, fmt.Sprintf("product %d was not on that sale", productID))
+				return
+			}
+			if in.quantity <= 0 {
+				writeJSONError(w, http.StatusBadRequest, fmt.Sprintf("quantity for %s must be > 0", line.Name))
+				return
+			}
+			if in.quantity > line.QtyReturnable {
+				writeJSONError(w, http.StatusBadRequest, fmt.Sprintf(
+					"cannot return %d of %s — only %d left to return (sold %d, already returned %d)",
+					in.quantity, line.Name, line.QtyReturnable, line.QtySold, line.QtyReturned))
+				return
+			}
+
+			// Cost comes from the ORIGINAL sale line, never from products (decision 19).
+			// A sale can hold more than one row for a product, so this picks the first
+			// by id. returnableLines picks the price with MAX for the same question.
+			// Both are safe because checkoutHandler reads products.price_rupees once
+			// inside its own transaction, so every row for one product in one sale
+			// carries the same price. If that ever stops being true, make both of these
+			// weighted averages instead of picking a row.
+			var cost sql.NullInt64
+			err := tx.QueryRowContext(ctx,
+				`SELECT cost_price_at_sale_rupees FROM transaction_items
+				 WHERE transaction_id = ? AND product_id = ?
+				 ORDER BY id LIMIT 1`,
+				req.OriginalTransactionID, productID,
+			).Scan(&cost)
+			if err != nil {
+				log.Printf("return cost lookup: %v", err)
+				writeJSONError(w, http.StatusInternalServerError, "return failed")
+				return
+			}
+
+			var stockBefore int
+			if err := tx.QueryRowContext(ctx, "SELECT stock FROM products WHERE id = ?", productID).Scan(&stockBefore); err != nil {
+				log.Printf("return stock lookup: %v", err)
+				writeJSONError(w, http.StatusInternalServerError, "return failed")
+				return
+			}
+
+			total += line.UnitPriceRupees * in.quantity
+			refunds = append(refunds, refundLine{
+				productID:   productID,
+				name:        line.Name,
+				quantity:    in.quantity,
+				unitPrice:   line.UnitPriceRupees,
+				cost:        cost,
+				sellable:    in.sellable,
+				stockBefore: stockBefore,
+			})
+		}
+
+		res, err := tx.ExecContext(ctx,
+			`INSERT INTO transactions (total_rupees, payment_method, kind, original_transaction_id)
+			 VALUES (?, ?, 'return', ?)`,
+			-total, req.PaymentMethod, req.OriginalTransactionID,
+		)
+		if err != nil {
+			log.Printf("insert return transaction: %v", err)
+			writeJSONError(w, http.StatusInternalServerError, "return failed")
+			return
+		}
+		returnID, err := res.LastInsertId()
+		if err != nil {
+			log.Printf("return last insert id: %v", err)
+			writeJSONError(w, http.StatusInternalServerError, "return failed")
+			return
+		}
+
+		for _, rl := range refunds {
+			// Negative quantity, negative line total, positive per-unit fields.
+			_, err := tx.ExecContext(ctx,
+				`INSERT INTO transaction_items
+				 (transaction_id, product_id, quantity, unit_price_rupees, line_total_rupees, cost_price_at_sale_rupees)
+				 VALUES (?, ?, ?, ?, ?, ?)`,
+				returnID, rl.productID, -rl.quantity, rl.unitPrice, -(rl.unitPrice * rl.quantity), rl.cost,
+			)
+			if err != nil {
+				log.Printf("insert return item: %v", err)
+				writeJSONError(w, http.StatusInternalServerError, "return failed")
+				return
+			}
+
+			// Money is refunded either way. Only sellable goods go back on the shelf.
+			if !rl.sellable {
+				continue
+			}
+			if _, err := tx.ExecContext(ctx,
+				"UPDATE products SET stock = stock + ? WHERE id = ?", rl.quantity, rl.productID,
+			); err != nil {
+				log.Printf("return update stock: %v", err)
+				writeJSONError(w, http.StatusInternalServerError, "return failed")
+				return
+			}
+			if err := recordMovement(ctx, tx, rl.productID, rl.quantity, rl.stockBefore+rl.quantity, "return"); err != nil {
+				log.Printf("record return movement: %v", err)
+				writeJSONError(w, http.StatusInternalServerError, "return failed")
+				return
+			}
+		}
+
+		if err := tx.Commit(); err != nil {
+			log.Printf("commit return: %v", err)
+			writeJSONError(w, http.StatusInternalServerError, "return failed")
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{"transaction_id": returnID, "refund_rupees": total})
 	}
 }

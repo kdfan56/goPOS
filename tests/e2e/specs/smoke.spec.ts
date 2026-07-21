@@ -46,32 +46,34 @@ test.describe('Smoke tests — key pages load correctly', () => {
     await expect(page.locator('table').first()).toBeVisible();
   });
 
+  // These three assert the empty state, so they pin a date range that no other spec can
+  // write into. Asserting "no sales exist" against the live range makes the test depend on
+  // whether the POS and returns specs have run yet, which is a race between workers.
+  const EMPTY_RANGE = '?from=2020-01-01&to=2020-01-02';
+
   test('categories report page loads', async ({ page }) => {
-    await page.goto('/reports/categories');
+    await page.goto('/reports/categories' + EMPTY_RANGE);
     await expect(page.locator('h1')).toContainText(/Sales by Category/);
     await expect(page.locator('input[name="from"]')).toBeVisible();
     await expect(page.locator('input[name="to"]')).toBeVisible();
-    // Should show empty state (no sales in seed data)
     await expect(page.locator('.empty')).toBeVisible();
   });
 
   test('itemwise margin report page loads', async ({ page }) => {
-    await page.goto('/reports/itemwise');
+    await page.goto('/reports/itemwise' + EMPTY_RANGE);
     await expect(page.locator('h1')).toContainText(/Itemwise Margin/);
     await expect(page.locator('input[name="from"]')).toBeVisible();
     await expect(page.locator('input[name="to"]')).toBeVisible();
-    // Seed data has no sales, so the empty state shows
     await expect(page.locator('.empty')).toBeVisible();
   });
 
   test('purchases report page loads', async ({ page }) => {
-    await page.goto('/reports/purchases');
+    await page.goto('/reports/purchases' + EMPTY_RANGE);
     await expect(page.locator('h1')).toContainText(/Purchases/);
     await expect(page.locator('input[name="from"]')).toBeVisible();
     await expect(page.locator('input[name="to"]')).toBeVisible();
     // The current-price caveat must always be on the page, not only when rows exist
     await expect(page.locator('.caveat')).toBeVisible();
-    // Seed data has no finalized receiving sessions, so the empty state shows
     await expect(page.locator('.empty')).toBeVisible();
   });
 

@@ -20,6 +20,7 @@
   .tile .label { font-size: 0.8rem; color: #5f6b7a; font-weight: 700; text-transform: uppercase; letter-spacing: 0.4px; }
   .tile .value { font-size: 1.9rem; font-weight: 700; margin-top: 0.35rem; line-height: 1.1; }
   .tile .value.warn { color: #d91515; }
+  .tile .subline { font-size: 0.78rem; color: #5f6b7a; margin-top: 0.3rem; }
   .tile .sub-link { display: block; margin-top: 0.4rem; font-size: 0.8rem; color: #0972d3; text-decoration: none; }
   .tile .sub-link:hover { text-decoration: underline; }
 
@@ -72,6 +73,7 @@
     <div class="tile">
       <div class="label">Today's Transactions</div>
       <div class="value">{{.TodayCount}}</div>
+      {{if .TodayReturns}}<div class="subline">{{.TodayReturns}} return{{if ne .TodayReturns 1}}s{{end}} (not counted above)</div>{{end}}
     </div>
     <div class="tile">
       <div class="label">{{.MonthLabel}} Sale</div>

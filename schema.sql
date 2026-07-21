@@ -15,10 +15,14 @@ CREATE TABLE IF NOT EXISTS products (
 
 CREATE INDEX IF NOT EXISTS idx_products_barcode ON products(barcode);
 
+-- kind='return' rows carry a NEGATIVE total_rupees and point at the sale they reverse
+-- (decision 19 sign convention, decision 22 flow shape).
 CREATE TABLE IF NOT EXISTS transactions (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     total_rupees INTEGER NOT NULL,
     payment_method TEXT NOT NULL CHECK(payment_method IN ('cash','card')),
+    kind TEXT NOT NULL DEFAULT 'sale' CHECK(kind IN ('sale','return')),
+    original_transaction_id INTEGER REFERENCES transactions(id),
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 

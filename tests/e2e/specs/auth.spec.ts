@@ -109,6 +109,16 @@ test.describe('Authentication and Role Access', () => {
       await ctx.close();
     });
 
+    // Returns are on the cashier allow-list on purpose — decision 22.
+    test('can access the return page', async ({ browser }) => {
+      const ctx = await authContext(browser, CASHIER);
+      const page = await ctx.newPage();
+      const resp = await page.goto('/pos/return');
+      expect(resp?.status()).toBe(200);
+      await expect(page.locator('#sale-id')).toBeVisible();
+      await ctx.close();
+    });
+
     test('cannot access products page (403)', async ({ browser }) => {
       const ctx = await authContext(browser, CASHIER);
       const page = await ctx.newPage();

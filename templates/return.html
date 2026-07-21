@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Return — goPOS</title>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: #f2f3f3; color: #16191f;
+    font-family: "Amazon Ember", "Helvetica Neue", Roboto, Arial, sans-serif;
+  }
+  .gp-content { max-width: 760px; margin: 0 auto; padding: 1.25rem 1rem 3rem; }
+
+  h1 { font-size: 1.5rem; margin: 0 0 0.25rem; }
+  .sub { color: #5f6b7a; font-size: 0.9rem; margin: 0 0 1.25rem; }
+
+  .panel { background: #fff; border: 1px solid #d5dbdb; padding: 1rem; margin-bottom: 1rem; }
+  .panel h2 { font-size: 1rem; margin: 0 0 0.75rem; }
+
+  label { display: block; font-size: 0.85rem; color: #5f6b7a; margin-bottom: 0.35rem; }
+  .row { display: flex; gap: 0.5rem; }
+  input[type=number], input[type=text], select {
+    padding: 0.55rem 0.7rem; font-size: 1rem; font-family: inherit;
+    border: 1px solid #aab7b8; border-radius: 0; background: #fff; color: #16191f;
+  }
+  .row input { flex: 1; }
+
+  button {
+    padding: 0.55rem 1.1rem; font-size: 0.95rem; font-family: inherit;
+    border-radius: 0; cursor: pointer; font-weight: 700;
+  }
+  .btn-primary { background: #ec7211; color: #fff; border: 1px solid #ec7211; }
+  .btn-primary:hover { background: #eb5f07; border-color: #eb5f07; }
+  .btn-primary:disabled { background: #d5dbdb; border-color: #d5dbdb; color: #8a9199; cursor: not-allowed; }
+  .btn-secondary { background: #fff; color: #16191f; border: 1px solid #687078; }
+  .btn-secondary:hover { background: #f2f3f3; }
+
+  .status { margin-top: 0.75rem; padding: 0.5rem 0.75rem; font-size: 0.9rem; }
+  .status.error { background: #fdf3f1; color: #d91515; border: 1px solid #f5c6c0; }
+  .status.ok { background: #f2fcf3; color: #037f0c; border: 1px solid #b7ebc0; }
+
+  table { width: 100%; border-collapse: collapse; }
+  th, td { padding: 0.5rem 0.6rem; text-align: left; border-bottom: 1px solid #e9ebed; font-size: 0.92rem; }
+  th { background: #fafafa; font-weight: 700; border-bottom: 2px solid #d5dbdb; }
+  td.right, th.right { text-align: right; }
+  td.center, th.center { text-align: center; }
+  .qty-input { width: 5rem; padding: 0.35rem 0.5rem; }
+  .exhausted { color: #8a9199; }
+
+  .sale-meta { font-size: 0.9rem; color: #5f6b7a; margin-bottom: 0.75rem; }
+  .refund-line { display: flex; justify-content: space-between; align-items: center; margin-top: 1rem; padding-top: 0.75rem; border-top: 2px solid #d5dbdb; }
+  .refund-line .amount { font-size: 1.5rem; font-weight: 700; }
+  .hidden { display: none; }
+  .note { font-size: 0.82rem; color: #5f6b7a; margin-top: 0.5rem; }
+</style>
+</head>
+<body>
+{{template "navCashier"}}
+<div class="gp-content">
+
+  <h1>Return</h1>
+  <p class="sub">Find the original sale, choose what comes back, then refund.</p>
+
+  <div class="panel">
+    <h2>1. Find the sale</h2>
+    <label for="sale-id">Receipt number</label>
+    <div class="row">
+      <input type="number" id="sale-id" min="1" placeholder="e.g. 1043" autofocus>
+      <button class="btn-secondary" id="lookup-btn">Look up</button>
+    </div>
+    <div id="lookup-status" class="status hidden"></div>
+  </div>
+
+  <div class="panel hidden" id="sale-panel">
+    <h2>2. Choose what comes back</h2>
+    <div class="sale-meta" id="sale-meta"></div>
+    <table>
+      <thead>
+        <tr>
+          <th>Item</th>
+          <th class="right">Price</th>
+          <th class="right">Sold</th>
+          <th class="right">Already returned</th>
+          <th class="right">Return qty</th>
+          <th class="center">Back on shelf?</th>
+        </tr>
+      </thead>
+      <tbody id="lines"></tbody>
+    </table>
+    <p class="note">Untick "back on shelf" for damaged or opened goods. The customer is refunded either way, but the stock count does not go up.</p>
+
+    <div class="refund-line">
+      <div>
+        <label for="pay-method" style="margin-bottom:0.2rem;">Refund by</label>
+        <select id="pay-method">
+          <option value="cash">cash</option>
+          <option value="card">card</option>
+        </select>
+        <div class="note" id="pay-hint" style="margin-top:0.3rem;"></div>
+      </div>
+      <div style="text-align:right;">
+        <div style="font-size:0.85rem;color:#5f6b7a;">Refund total</div>
+        <div class="amount" id="refund-total">Rs. 0</div>
+      </div>
+      <button class="btn-primary" id="submit-btn" disabled>Refund</button>
+    </div>
+    <div id="submit-status" class="status hidden"></div>
+  </div>
+
+</div>
+
+<script>
+  const saleIdInput = document.getElementById('sale-id');
+  const lookupBtn   = document.getElementById('lookup-btn');
+  const lookupStat  = document.getElementById('lookup-status');
+  const salePanel   = document.getElementById('sale-panel');
+  const saleMeta    = document.getElementById('sale-meta');
+  const linesBody   = document.getElementById('lines');
+  const refundTotal = document.getElementById('refund-total');
+  const submitBtn   = document.getElementById('submit-btn');
+  const submitStat  = document.getElementById('submit-status');
+  const payMethod   = document.getElementById('pay-method');
+
+  let currentSale = null;
+
+  function show(el, msg, kind) {
+    el.textContent = msg;
+    el.className = 'status ' + kind;
+  }
+  function hide(el) { el.className = 'status hidden'; }
+
+  async function lookup() {
+    const id = parseInt(saleIdInput.value, 10);
+    if (!id) { show(lookupStat, 'Enter a receipt number.', 'error'); return; }
+
+    hide(submitStat);
+    salePanel.classList.add('hidden');
+    show(lookupStat, 'Looking up…', 'ok');
+
+    const resp = await fetch('/pos/return/lookup', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ transaction_id: id })
+    });
+    const data = await resp.json();
+    if (!resp.ok) { show(lookupStat, data.error || 'Lookup failed.', 'error'); return; }
+
+    currentSale = data;
+    hide(lookupStat);
+    renderSale(data);
+  }
+
+  function renderSale(sale) {
+    saleMeta.textContent =
+      'Sale #' + sale.transaction_id + ' — ' + sale.created_at +
+      ' — Rs. ' + sale.total_rupees + ' paid by ' + sale.payment_method;
+
+    // Default the refund to however the customer paid. Leaving this on "cash" for a
+    // card sale silently puts the refund in the wrong column, and the end-of-day
+    // reconciliation against the card terminal then never balances.
+    payMethod.value = sale.payment_method;
+    document.getElementById('pay-hint').textContent =
+      sale.payment_method === 'card'
+        ? 'Paid by card. Refund the card on the card terminal first.'
+        : 'Paid by cash.';
+
+    linesBody.innerHTML = '';
+    sale.lines.forEach(function (line) {
+      const tr = document.createElement('tr');
+      const exhausted = line.qty_returnable <= 0;
+      if (exhausted) tr.className = 'exhausted';
+
+      tr.innerHTML =
+        '<td>' + line.name + '</td>' +
+        '<td class="right">Rs. ' + line.unit_price_rupees + '</td>' +
+        '<td class="right">' + line.qty_sold + '</td>' +
+        '<td class="right">' + line.qty_returned + '</td>' +
+        '<td class="right"><input type="number" class="qty-input" min="0" value="0" ' +
+          'max="' + line.qty_returnable + '" ' + (exhausted ? 'disabled' : '') + '></td>' +
+        '<td class="center"><input type="checkbox" checked ' + (exhausted ? 'disabled' : '') + '></td>';
+
+      const qtyInput = tr.querySelector('.qty-input');
+      qtyInput.dataset.productId = line.product_id;
+      qtyInput.dataset.unitPrice = line.unit_price_rupees;
+      qtyInput.dataset.max = line.qty_returnable;
+      qtyInput.addEventListener('input', recalc);
+
+      linesBody.appendChild(tr);
+    });
+
+    salePanel.classList.remove('hidden');
+    recalc();
+  }
+
+  // Collect the rows the cashier actually filled in, and clamp to what is returnable.
+  // The server re-checks all of this; the clamp here only stops an obvious mistake early.
+  function collect() {
+    const out = [];
+    let total = 0;
+    linesBody.querySelectorAll('.qty-input').forEach(function (input) {
+      let qty = parseInt(input.value, 10) || 0;
+      const max = parseInt(input.dataset.max, 10);
+      if (qty > max) { qty = max; input.value = max; }
+      if (qty <= 0) return;
+      const sellable = input.closest('tr').querySelector('input[type=checkbox]').checked;
+      out.push({
+        product_id: parseInt(input.dataset.productId, 10),
+        quantity: qty,
+        sellable: sellable
+      });
+      total += qty * parseInt(input.dataset.unitPrice, 10);
+    });
+    return { lines: out, total: total };
+  }
+
+  function recalc() {
+    const picked = collect();
+    refundTotal.textContent = 'Rs. ' + picked.total;
+    submitBtn.disabled = picked.lines.length === 0;
+  }
+
+  async function submitReturn() {
+    const picked = collect();
+    if (picked.lines.length === 0) return;
+
+    submitBtn.disabled = true;
+    show(submitStat, 'Processing…', 'ok');
+
+    const resp = await fetch('/pos/return/submit', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        original_transaction_id: currentSale.transaction_id,
+        payment_method: payMethod.value,
+        lines: picked.lines
+      })
+    });
+    const data = await resp.json();
+    if (!resp.ok) {
+      show(submitStat, data.error || 'Return failed.', 'error');
+      submitBtn.disabled = false;
+      return;
+    }
+
+    show(submitStat, 'Refunded Rs. ' + data.refund_rupees + '. Opening return slip…', 'ok');
+    window.open('/receipt/' + data.transaction_id, '_blank');
+
+    // Re-read the sale so the "already returned" numbers are current.
+    lookup();
+  }
+
+  lookupBtn.addEventListener('click', lookup);
+  saleIdInput.addEventListener('keydown', function (e) { if (e.key === 'Enter') lookup(); });
+  submitBtn.addEventListener('click', submitReturn);
+</script>
+</body>
+</html>

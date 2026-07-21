@@ -79,6 +79,7 @@
       <th class="right">Card (Rs.)</th>
       <th class="right">Total (Rs.)</th>
       <th class="right">Transactions</th>
+      <th class="right">Returns</th>
     </tr>
   </thead>
   <tbody>
@@ -89,6 +90,7 @@
       <td class="right {{if not .CardRupees}}zero{{end}}">{{.CardRupees}}</td>
       <td class="right {{if not .TotalRupees}}zero{{end}}">{{.TotalRupees}}</td>
       <td class="right {{if not .TxnCount}}zero{{end}}">{{.TxnCount}}</td>
+      <td class="right {{if not .ReturnCount}}zero{{end}}">{{.ReturnCount}}</td>
     </tr>
     {{end}}
   </tbody>
@@ -99,9 +101,14 @@
       <td class="right">{{.GrandCard}}</td>
       <td class="right">{{.GrandTotal}}</td>
       <td class="right">{{.GrandCount}}</td>
+      <td class="right">{{.GrandReturn}}</td>
     </tr>
   </tfoot>
 </table>
+<p style="color:#5f6b7a;font-size:0.875rem;margin-top:-0.25rem">
+  Transactions counts sales only. Returns are listed separately, and the money columns already have
+  the refunds subtracted from them.
+</p>
 
 {{if .HourRows}}
 <h2>By hour of day</h2>
@@ -114,6 +121,7 @@
       <th class="right">Card (Rs.)</th>
       <th class="right">Total (Rs.)</th>
       <th class="right">Transactions</th>
+      <th class="right">Returns</th>
     </tr>
   </thead>
   <tbody>
@@ -124,6 +132,7 @@
       <td class="right {{if not .CardRupees}}zero{{end}}">{{.CardRupees}}</td>
       <td class="right {{if not .TotalRupees}}zero{{end}}">{{.TotalRupees}}</td>
       <td class="right">{{.TxnCount}}</td>
+      <td class="right {{if not .ReturnCount}}zero{{end}}">{{.ReturnCount}}</td>
     </tr>
     {{end}}
   </tbody>

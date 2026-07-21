@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>Receipt #{{.TransactionID}}</title>
+<title>{{if .IsReturn}}Return{{else}}Receipt{{end}} #{{.TransactionID}}</title>
 <style>
   @page { margin: 5mm; }
   body { font-family: 'Courier New', monospace; max-width: 320px; margin: 0 auto; padding: 1rem; font-size: 12px; color: #000; }
@@ -22,6 +22,7 @@
   .grand { font-weight: bold; font-size: 14px; border-top: 1px solid #000; padding-top: 4px !important; }
 
   .footer { text-align: center; margin-top: 0.75rem; padding-top: 0.5rem; border-top: 1px dashed #000; }
+  .return-mark { text-align: center; font-weight: bold; font-size: 14px; letter-spacing: 2px; border: 2px solid #000; padding: 3px 0; margin-bottom: 0.5rem; }
   .no-print { margin-top: 1.5rem; text-align: center; }
   .no-print button {
     padding: 0.5rem 1.25rem; margin: 0 0.25rem; cursor: pointer; font-weight: 700;
@@ -35,8 +36,10 @@
 </head>
 <body onload="window.print()">
 <h1>goPOS</h1>
+{{if .IsReturn}}<div class="return-mark">RETURN</div>{{end}}
 <div class="meta">
-  Receipt #{{.TransactionID}}<br>
+  {{if .IsReturn}}Return{{else}}Receipt{{end}} #{{.TransactionID}}<br>
+  {{if .IsReturn}}<span class="small">against sale #{{.OriginalID}}</span><br>{{end}}
   <span class="small">{{.CreatedAt}}</span>
 </div>
 
@@ -56,12 +59,12 @@
   <table>
     <tr><td>Items</td><td class="right">{{.ItemCount}}</td></tr>
     <tr><td>Payment</td><td class="right">{{.PaymentMethod}}</td></tr>
-    <tr class="grand"><td>TOTAL</td><td class="right">Rs. {{.TotalRupees}}</td></tr>
+    <tr class="grand"><td>{{if .IsReturn}}REFUND{{else}}TOTAL{{end}}</td><td class="right">Rs. {{.TotalRupees}}</td></tr>
   </table>
 </div>
 
 <div class="footer">
-  Thank you, come again!
+  {{if .IsReturn}}Refund issued.{{else}}Thank you, come again!{{end}}
 </div>
 
 <div class="no-print">
