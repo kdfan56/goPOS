@@ -25,13 +25,17 @@ var storeLocation *time.Location
 const lowStockThreshold = 10
 
 type Product struct {
-	ID          int
-	Barcode     string
-	Name        string
-	PriceRupees int
-	Stock       int
-	Category    string
-	SupplierID  sql.NullInt64
+	ID           int
+	Barcode      string
+	Name         string
+	PriceRupees  int
+	Stock        int
+	Category     string
+	SupplierID   sql.NullInt64
+	ReorderLevel sql.NullInt64
+	ReorderQty   sql.NullInt64
+	Threshold    int    // effective low-stock cutoff: COALESCE(reorder_level, lowStockThreshold)
+	SupplierName string // filled by the products list query only
 }
 
 func main() {
@@ -70,9 +74,12 @@ func main() {
 		`ALTER TABLE products ADD COLUMN cost_price_rupees INTEGER`,
 		`ALTER TABLE products ADD COLUMN category TEXT`,
 		`ALTER TABLE products ADD COLUMN supplier_id INTEGER REFERENCES suppliers(id)`,
+		`ALTER TABLE products ADD COLUMN reorder_level INTEGER`,
+		`ALTER TABLE products ADD COLUMN reorder_qty INTEGER`,
+		`ALTER TABLE transaction_items ADD COLUMN cost_price_at_sale_rupees INTEGER`,
 	} {
 		if _, err := db.Exec(col); err != nil && !strings.Contains(err.Error(), "duplicate column") {
-			log.Fatalf("migrate products: %v", err)
+			log.Fatalf("migrate: %v", err)
 		}
 	}
 
@@ -104,6 +111,8 @@ func main() {
 	mux.HandleFunc("GET /reports/product/{id}", productDrilldownHandler(db, tmpl))
 	mux.HandleFunc("GET /reports/suppliers", reportsSuppliersHandler(db, tmpl))
 	mux.HandleFunc("GET /reports/categories", reportsCategoriesHandler(db, tmpl))
+	mux.HandleFunc("GET /reports/itemwise", reportsItemwiseHandler(db, tmpl))
+	mux.HandleFunc("GET /reports/itemwise/csv", reportsItemwiseCSVHandler(db))
 	mux.HandleFunc("GET /receiving", receivingListHandler(db, tmpl))
 	mux.HandleFunc("POST /receiving/new", createReceivingSessionHandler(db, tmpl))
 	mux.HandleFunc("GET /receiving/{id}", receivingDetailHandler(db, tmpl))
@@ -287,9 +296,9 @@ func scanHandler(db *sql.DB) http.HandlerFunc {
 		}
 		var p Product
 		err := db.QueryRow(
-			"SELECT id, barcode, name, price_rupees, stock, COALESCE(category,'') FROM products WHERE barcode = ? OR barcode = ?",
-			req.Barcode, alt,
-		).Scan(&p.ID, &p.Barcode, &p.Name, &p.PriceRupees, &p.Stock, &p.Category)
+			"SELECT id, barcode, name, price_rupees, stock, COALESCE(category,''), COALESCE(reorder_level, ?) FROM products WHERE barcode = ? OR barcode = ?",
+			lowStockThreshold, req.Barcode, alt,
+		).Scan(&p.ID, &p.Barcode, &p.Name, &p.PriceRupees, &p.Stock, &p.Category, &p.Threshold)
 
 		if errors.Is(err, sql.ErrNoRows) {
 			writeJSONError(w, http.StatusNotFound, "barcode not found")
@@ -311,6 +320,7 @@ func scanHandler(db *sql.DB) http.HandlerFunc {
 			"price_rupees":     p.PriceRupees,
 			"stock":            p.Stock,
 			"category":         p.Category,
+			"low_threshold":    p.Threshold,
 			"recent_additions": additions,
 		})
 	}
@@ -391,6 +401,7 @@ func checkoutHandler(db *sql.DB) http.HandlerFunc {
 			id          int
 			name        string
 			price       int
+			cost        sql.NullInt64 // per-unit cost snapshot; NULL when product has no cost
 			quantity    int
 			stockBefore int
 		}
@@ -406,9 +417,9 @@ func checkoutHandler(db *sql.DB) http.HandlerFunc {
 			p.id = item.ProductID
 			p.quantity = item.Quantity
 			err := tx.QueryRowContext(ctx,
-				"SELECT name, price_rupees, stock FROM products WHERE id = ?",
+				"SELECT name, price_rupees, stock, cost_price_rupees FROM products WHERE id = ?",
 				item.ProductID,
-			).Scan(&p.name, &p.price, &p.stockBefore)
+			).Scan(&p.name, &p.price, &p.stockBefore, &p.cost)
 			if errors.Is(err, sql.ErrNoRows) {
 				writeJSONError(w, http.StatusBadRequest, fmt.Sprintf("product %d not found", item.ProductID))
 				return
@@ -444,8 +455,8 @@ func checkoutHandler(db *sql.DB) http.HandlerFunc {
 
 		for _, p := range lines {
 			_, err := tx.ExecContext(ctx,
-				"INSERT INTO transaction_items (transaction_id, product_id, quantity, unit_price_rupees, line_total_rupees) VALUES (?, ?, ?, ?, ?)",
-				txnID, p.id, p.quantity, p.price, p.price*p.quantity,
+				"INSERT INTO transaction_items (transaction_id, product_id, quantity, unit_price_rupees, line_total_rupees, cost_price_at_sale_rupees) VALUES (?, ?, ?, ?, ?, ?)",
+				txnID, p.id, p.quantity, p.price, p.price*p.quantity, p.cost,
 			)
 			if err != nil {
 				log.Printf("insert item: %v", err)
@@ -606,12 +617,12 @@ type CategorySales struct {
 }
 
 type reportsCategoriesPageData struct {
-	Rows       []CategorySales
-	FromDate   string
-	ToDate     string
-	GrandQty   int
-	GrandRev   int
-	GrandCost  int
+	Rows        []CategorySales
+	FromDate    string
+	ToDate      string
+	GrandQty    int
+	GrandRev    int
+	GrandCost   int
 	GrandProfit int
 }
 
@@ -1010,7 +1021,7 @@ func dashboardHandler(db *sql.DB, tmpl *template.Template) http.HandlerFunc {
 
 		var lowStockCount int
 		if err := db.QueryRow(
-			`SELECT COUNT(*) FROM products WHERE stock < ?`, lowStockThreshold,
+			`SELECT COUNT(*) FROM products WHERE stock < COALESCE(reorder_level, ?)`, lowStockThreshold,
 		).Scan(&lowStockCount); err != nil {
 			log.Printf("dashboard low stock query: %v", err)
 			http.Error(w, "failed to load dashboard", http.StatusInternalServerError)
@@ -1460,7 +1471,6 @@ func receivingScanHandler(db *sql.DB) http.HandlerFunc {
 			writeJSONError(w, http.StatusBadRequest, "barcode required")
 			return
 		}
-
 		alt := altBarcode(barcode)
 		if alt == "" {
 			alt = barcode
@@ -2140,22 +2150,25 @@ func productsHandler(db *sql.DB, tmpl *template.Template) http.HandlerFunc {
 		lowOnly := r.URL.Query().Get("low") == "1"
 		category := strings.TrimSpace(r.URL.Query().Get("category"))
 
-		query := "SELECT id, barcode, name, price_rupees, stock, COALESCE(category,'') FROM products"
-		args := []any{}
+		query := `SELECT p.id, p.barcode, p.name, p.price_rupees, p.stock, COALESCE(p.category,''),
+		       COALESCE(p.reorder_level, ?), p.reorder_qty, COALESCE(s.name, '')
+		FROM products p
+		LEFT JOIN suppliers s ON s.id = p.supplier_id`
+		args := []any{lowStockThreshold}
 
 		var wheres []string
 		if lowOnly {
-			wheres = append(wheres, "stock < ?")
+			wheres = append(wheres, "p.stock < COALESCE(p.reorder_level, ?)")
 			args = append(args, lowStockThreshold)
 		}
 		if category != "" {
-			wheres = append(wheres, "category = ?")
+			wheres = append(wheres, "p.category = ?")
 			args = append(args, category)
 		}
 		if len(wheres) > 0 {
 			query += " WHERE " + strings.Join(wheres, " AND ")
 		}
-		query += " ORDER BY name"
+		query += " ORDER BY p.name"
 
 		rows, err := db.Query(query, args...)
 		if err != nil {
@@ -2167,7 +2180,7 @@ func productsHandler(db *sql.DB, tmpl *template.Template) http.HandlerFunc {
 		var products []Product
 		for rows.Next() {
 			var p Product
-			if err := rows.Scan(&p.ID, &p.Barcode, &p.Name, &p.PriceRupees, &p.Stock, &p.Category); err != nil {
+			if err := rows.Scan(&p.ID, &p.Barcode, &p.Name, &p.PriceRupees, &p.Stock, &p.Category, &p.Threshold, &p.ReorderQty, &p.SupplierName); err != nil {
 				http.Error(w, err.Error(), http.StatusInternalServerError)
 				return
 			}
@@ -2180,7 +2193,7 @@ func productsHandler(db *sql.DB, tmpl *template.Template) http.HandlerFunc {
 		}
 
 		var lowCount int
-		if err := db.QueryRow("SELECT COUNT(*) FROM products WHERE stock < ?", lowStockThreshold).Scan(&lowCount); err != nil {
+		if err := db.QueryRow("SELECT COUNT(*) FROM products WHERE stock < COALESCE(reorder_level, ?)", lowStockThreshold).Scan(&lowCount); err != nil {
 			log.Printf("count low stock: %v", err)
 
 		}
@@ -2255,15 +2268,25 @@ func reportsCategoriesHandler(db *sql.DB, tmpl *template.Template) http.HandlerF
 }
 
 type editProductData struct {
-	Product     Product
-	Suppliers   []Supplier
-	Barcode     string
-	Name        string
-	PriceRupees string
-	Stock       string
-	Category    string
-	SupplierID  string
-	Error       string
+	Product      Product
+	Suppliers    []Supplier
+	Barcode      string
+	Name         string
+	PriceRupees  string
+	Stock        string
+	Category     string
+	SupplierID   string
+	ReorderLevel string
+	ReorderQty   string
+	Error        string
+}
+
+// nullIntStr renders a nullable INTEGER column as a form value ("" = NULL).
+func nullIntStr(n sql.NullInt64) string {
+	if !n.Valid {
+		return ""
+	}
+	return strconv.FormatInt(n.Int64, 10)
 }
 
 func queryActiveSuppliers(ctx context.Context, db *sql.DB) ([]Supplier, error) {
@@ -2292,9 +2315,9 @@ func editProductFormHandler(db *sql.DB, tmpl *template.Template) http.HandlerFun
 		}
 		var p Product
 		err = db.QueryRowContext(r.Context(),
-			"SELECT id, barcode, name, price_rupees, stock, COALESCE(category,''), supplier_id FROM products WHERE id = ?",
+			"SELECT id, barcode, name, price_rupees, stock, COALESCE(category,''), supplier_id, reorder_level, reorder_qty FROM products WHERE id = ?",
 			id,
-		).Scan(&p.ID, &p.Barcode, &p.Name, &p.PriceRupees, &p.Stock, &p.Category, &p.SupplierID)
+		).Scan(&p.ID, &p.Barcode, &p.Name, &p.PriceRupees, &p.Stock, &p.Category, &p.SupplierID, &p.ReorderLevel, &p.ReorderQty)
 		if errors.Is(err, sql.ErrNoRows) {
 			http.NotFound(w, r)
 			return
@@ -2312,19 +2335,17 @@ func editProductFormHandler(db *sql.DB, tmpl *template.Template) http.HandlerFun
 			return
 		}
 
-		sid := ""
-		if p.SupplierID.Valid {
-			sid = strconv.FormatInt(p.SupplierID.Int64, 10)
-		}
 		data := editProductData{
-			Product:     p,
-			Suppliers:   suppliers,
-			Barcode:     p.Barcode,
-			Name:        p.Name,
-			PriceRupees: strconv.Itoa(p.PriceRupees),
-			Stock:       strconv.Itoa(p.Stock),
-			Category:    p.Category,
-			SupplierID:  sid,
+			Product:      p,
+			Suppliers:    suppliers,
+			Barcode:      p.Barcode,
+			Name:         p.Name,
+			PriceRupees:  strconv.Itoa(p.PriceRupees),
+			Stock:        strconv.Itoa(p.Stock),
+			Category:     p.Category,
+			SupplierID:   nullIntStr(p.SupplierID),
+			ReorderLevel: nullIntStr(p.ReorderLevel),
+			ReorderQty:   nullIntStr(p.ReorderQty),
 		}
 		if err := tmpl.ExecuteTemplate(w, "edit_product.html", data); err != nil {
 			log.Printf("render edit_product: %v", err)
@@ -2348,6 +2369,8 @@ func editProductHandler(db *sql.DB, tmpl *template.Template) http.HandlerFunc {
 		stockStr := strings.TrimSpace(r.FormValue("stock"))
 		category := strings.TrimSpace(r.FormValue("category"))
 		supplierStr := strings.TrimSpace(r.FormValue("supplier_id"))
+		reorderLevelStr := strings.TrimSpace(r.FormValue("reorder_level"))
+		reorderQtyStr := strings.TrimSpace(r.FormValue("reorder_qty"))
 
 		if name == "" {
 			renderEditProductError(db, tmpl, w, r, id, "Name is required")
@@ -2374,11 +2397,66 @@ func editProductHandler(db *sql.DB, tmpl *template.Template) http.HandlerFunc {
 			supID = sid
 		}
 
-		if _, err := db.ExecContext(r.Context(),
-			"UPDATE products SET name=?, price_rupees=?, stock=?, category=?, supplier_id=? WHERE id=?",
-			name, price, stock, category, supID, id,
+		// blank = NULL = use the global default threshold
+		var reorderLevel interface{}
+		if reorderLevelStr != "" {
+			n, err := strconv.Atoi(reorderLevelStr)
+			if err != nil || n < 0 {
+				renderEditProductError(db, tmpl, w, r, id, "Reorder level must be a non-negative whole number (or blank for default)")
+				return
+			}
+			reorderLevel = n
+		}
+		var reorderQty interface{}
+		if reorderQtyStr != "" {
+			n, err := strconv.Atoi(reorderQtyStr)
+			if err != nil || n < 0 {
+				renderEditProductError(db, tmpl, w, r, id, "Reorder qty must be a non-negative whole number (or blank)")
+				return
+			}
+			reorderQty = n
+		}
+
+		// stock can change here, so this write follows the same rule as every
+		// other stock writer: update + recordMovement in one transaction
+		ctx := r.Context()
+		tx, err := db.BeginTx(ctx, nil)
+		if err != nil {
+			log.Printf("begin edit product tx: %v", err)
+			renderEditProductError(db, tmpl, w, r, id, "Failed to save changes")
+			return
+		}
+		defer tx.Rollback()
+
+		var oldStock int
+		err = tx.QueryRowContext(ctx, "SELECT stock FROM products WHERE id = ?", id).Scan(&oldStock)
+		if errors.Is(err, sql.ErrNoRows) {
+			http.NotFound(w, r)
+			return
+		}
+		if err != nil {
+			log.Printf("edit product stock read: %v", err)
+			renderEditProductError(db, tmpl, w, r, id, "Failed to save changes")
+			return
+		}
+
+		if _, err := tx.ExecContext(ctx,
+			"UPDATE products SET name=?, price_rupees=?, stock=?, category=?, supplier_id=?, reorder_level=?, reorder_qty=? WHERE id=?",
+			name, price, stock, category, supID, reorderLevel, reorderQty, id,
 		); err != nil {
 			log.Printf("update product: %v", err)
+			renderEditProductError(db, tmpl, w, r, id, "Failed to save changes")
+			return
+		}
+		if stock != oldStock {
+			if err := recordMovement(ctx, tx, id, stock-oldStock, stock, "manual_adjust"); err != nil {
+				log.Printf("record edit movement: %v", err)
+				renderEditProductError(db, tmpl, w, r, id, "Failed to save changes")
+				return
+			}
+		}
+		if err := tx.Commit(); err != nil {
+			log.Printf("commit edit product: %v", err)
 			renderEditProductError(db, tmpl, w, r, id, "Failed to save changes")
 			return
 		}
@@ -2389,28 +2467,26 @@ func editProductHandler(db *sql.DB, tmpl *template.Template) http.HandlerFunc {
 func renderEditProductError(db *sql.DB, tmpl *template.Template, w http.ResponseWriter, r *http.Request, id int, msg string) {
 	var p Product
 	err := db.QueryRowContext(r.Context(),
-		"SELECT id, barcode, name, price_rupees, stock, COALESCE(category,''), supplier_id FROM products WHERE id = ?",
+		"SELECT id, barcode, name, price_rupees, stock, COALESCE(category,''), supplier_id, reorder_level, reorder_qty FROM products WHERE id = ?",
 		id,
-	).Scan(&p.ID, &p.Barcode, &p.Name, &p.PriceRupees, &p.Stock, &p.Category, &p.SupplierID)
+	).Scan(&p.ID, &p.Barcode, &p.Name, &p.PriceRupees, &p.Stock, &p.Category, &p.SupplierID, &p.ReorderLevel, &p.ReorderQty)
 	if err != nil {
 		http.Error(w, "product not found", http.StatusInternalServerError)
 		return
 	}
 	suppliers, _ := queryActiveSuppliers(r.Context(), db)
-	sid := ""
-	if p.SupplierID.Valid {
-		sid = strconv.FormatInt(p.SupplierID.Int64, 10)
-	}
 	data := editProductData{
-		Product:     p,
-		Suppliers:   suppliers,
-		Barcode:     p.Barcode,
-		Name:        p.Name,
-		PriceRupees: strconv.Itoa(p.PriceRupees),
-		Stock:       strconv.Itoa(p.Stock),
-		Category:    p.Category,
-		SupplierID:  sid,
-		Error:       msg,
+		Product:      p,
+		Suppliers:    suppliers,
+		Barcode:      p.Barcode,
+		Name:         p.Name,
+		PriceRupees:  strconv.Itoa(p.PriceRupees),
+		Stock:        strconv.Itoa(p.Stock),
+		Category:     p.Category,
+		SupplierID:   nullIntStr(p.SupplierID),
+		ReorderLevel: nullIntStr(p.ReorderLevel),
+		ReorderQty:   nullIntStr(p.ReorderQty),
+		Error:        msg,
 	}
 	tmpl.ExecuteTemplate(w, "edit_product.html", data)
 }
@@ -2424,12 +2500,12 @@ type SupplierSales struct {
 }
 
 type reportsSuppliersPageData struct {
-	Rows       []SupplierSales
-	FromDate   string
-	ToDate     string
-	GrandQty   int
-	GrandRev   int
-	GrandCost  int
+	Rows        []SupplierSales
+	FromDate    string
+	ToDate      string
+	GrandQty    int
+	GrandRev    int
+	GrandCost   int
 	GrandProfit int
 }
 
@@ -2487,5 +2563,149 @@ func reportsSuppliersHandler(db *sql.DB, tmpl *template.Template) http.HandlerFu
 		if err := tmpl.ExecuteTemplate(w, "reports_suppliers.html", data); err != nil {
 			log.Printf("render reports_suppliers: %v", err)
 		}
+	}
+}
+
+type ItemwiseRow struct {
+	ProductID int
+	Name      string
+	Qty       int
+	SaleRs    int
+	CostRs    int
+	MarginRs  int
+	MarginPct string // "12.5%" or "—" when sale is 0
+	Note      string // "" | "est." (cost estimated from current) | "incomplete" (some lines have no cost at all)
+}
+
+type itemwiseTotals struct {
+	Qty       int
+	SaleRs    int
+	CostRs    int
+	MarginRs  int
+	NotedRows int
+}
+
+// queryItemwise is shared by the HTML page and the CSV export.
+// Cost per line = the checkout-time snapshot; for rows written before the
+// snapshot column existed it falls back to the product's CURRENT cost and the
+// row is marked "est." — see decision 18.
+func queryItemwise(db *sql.DB, fromISO, toISO string) ([]ItemwiseRow, itemwiseTotals, error) {
+	rows, err := db.Query(`
+		SELECT p.id, p.name,
+		       SUM(ti.quantity),
+		       SUM(ti.line_total_rupees),
+		       COALESCE(SUM(ti.quantity * COALESCE(ti.cost_price_at_sale_rupees, p.cost_price_rupees)), 0),
+		       SUM(CASE WHEN ti.cost_price_at_sale_rupees IS NULL AND p.cost_price_rupees IS NOT NULL THEN 1 ELSE 0 END),
+		       SUM(CASE WHEN ti.cost_price_at_sale_rupees IS NULL AND p.cost_price_rupees IS NULL THEN 1 ELSE 0 END)
+		FROM transaction_items ti
+		JOIN products p ON p.id = ti.product_id
+		JOIN transactions t ON t.id = ti.transaction_id
+		WHERE date(t.created_at, '+5 hours') BETWEEN ? AND ?
+		GROUP BY p.id
+		ORDER BY SUM(ti.line_total_rupees) DESC
+	`, fromISO, toISO)
+	if err != nil {
+		return nil, itemwiseTotals{}, err
+	}
+	defer rows.Close()
+
+	var out []ItemwiseRow
+	var totals itemwiseTotals
+	for rows.Next() {
+		var it ItemwiseRow
+		var estLines, unknownLines int
+		if err := rows.Scan(&it.ProductID, &it.Name, &it.Qty, &it.SaleRs, &it.CostRs, &estLines, &unknownLines); err != nil {
+			return nil, itemwiseTotals{}, err
+		}
+		it.MarginRs = it.SaleRs - it.CostRs
+		if it.SaleRs != 0 {
+			it.MarginPct = fmt.Sprintf("%.1f%%", 100*float64(it.MarginRs)/float64(it.SaleRs))
+		} else {
+			it.MarginPct = "—"
+		}
+		if unknownLines > 0 {
+			it.Note = "incomplete"
+		} else if estLines > 0 {
+			it.Note = "est."
+		}
+		if it.Note != "" {
+			totals.NotedRows++
+		}
+		totals.Qty += it.Qty
+		totals.SaleRs += it.SaleRs
+		totals.CostRs += it.CostRs
+		totals.MarginRs += it.MarginRs
+		out = append(out, it)
+	}
+	return out, totals, rows.Err()
+}
+
+type reportsItemwisePageData struct {
+	Rows     []ItemwiseRow
+	FromDate string
+	ToDate   string
+	Totals   itemwiseTotals
+	GrandPct string
+}
+
+func reportsItemwiseHandler(db *sql.DB, tmpl *template.Template) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		from, to := parseDateRange(r)
+		fromISO := from.Format("2006-01-02")
+		toISO := to.Format("2006-01-02")
+
+		items, totals, err := queryItemwise(db, fromISO, toISO)
+		if err != nil {
+			log.Printf("itemwise report query: %v", err)
+			http.Error(w, "failed to load report", http.StatusInternalServerError)
+			return
+		}
+
+		data := reportsItemwisePageData{Rows: items, FromDate: fromISO, ToDate: toISO, Totals: totals, GrandPct: "—"}
+		if totals.SaleRs != 0 {
+			data.GrandPct = fmt.Sprintf("%.1f%%", 100*float64(totals.MarginRs)/float64(totals.SaleRs))
+		}
+		if err := tmpl.ExecuteTemplate(w, "reports_itemwise.html", data); err != nil {
+			log.Printf("render reports_itemwise: %v", err)
+		}
+	}
+}
+
+func reportsItemwiseCSVHandler(db *sql.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		from, to := parseDateRange(r)
+		fromISO := from.Format("2006-01-02")
+		toISO := to.Format("2006-01-02")
+
+		items, totals, err := queryItemwise(db, fromISO, toISO)
+		if err != nil {
+			log.Printf("itemwise csv query: %v", err)
+			http.Error(w, "failed to export", http.StatusInternalServerError)
+			return
+		}
+
+		filename := fmt.Sprintf("itemwise-%s-to-%s.csv", fromISO, toISO)
+		w.Header().Set("Content-Type", "text/csv")
+		w.Header().Set("Content-Disposition", `attachment; filename="`+filename+`"`)
+
+		cw := csv.NewWriter(w)
+		cw.Write([]string{"Product", "Qty", "Sale (Rs.)", "Cost (Rs.)", "Margin (Rs.)", "P/L %", "Cost Note"})
+		for _, it := range items {
+			cw.Write([]string{
+				it.Name,
+				strconv.Itoa(it.Qty),
+				strconv.Itoa(it.SaleRs),
+				strconv.Itoa(it.CostRs),
+				strconv.Itoa(it.MarginRs),
+				it.MarginPct,
+				it.Note,
+			})
+		}
+		grandPct := "—"
+		if totals.SaleRs != 0 {
+			grandPct = fmt.Sprintf("%.1f%%", 100*float64(totals.MarginRs)/float64(totals.SaleRs))
+		}
+		cw.Write([]string{"TOTAL", strconv.Itoa(totals.Qty), strconv.Itoa(totals.SaleRs), strconv.Itoa(totals.CostRs), strconv.Itoa(totals.MarginRs), grandPct, ""})
+		cw.Flush()
 	}
 }

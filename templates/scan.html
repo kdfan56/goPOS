@@ -170,6 +170,7 @@ const nfAgainBtn = document.getElementById('nf-again-btn');
 let scanning = true;
 let controls = null;
 let currentProductId = null;
+let currentThreshold = 10; // replaced per-product by low_threshold from /pos/scan
 
 function setStatus(text, kind) {
   statusEl.textContent = text;
@@ -184,6 +185,7 @@ function escapeHtml(s) {
 
 function showResult(p) {
   currentProductId = p.id;
+  currentThreshold = p.low_threshold ?? 10; // ?? not ||: reorder_level 0 means "never low"
   rName.textContent = p.name;
   rBarcode.textContent = p.barcode;
   rPrice.textContent = p.price_rupees;
@@ -215,7 +217,7 @@ function setStockDisplay(stock) {
   let cls = 'fine';
   let text = 'on hand: ' + stock;
   if (stock === 0) { cls = 'out'; text = 'OUT OF STOCK'; }
-  else if (stock < 10) cls = 'low';
+  else if (stock < currentThreshold) cls = 'low';
   rStockWrap.className = 'stock ' + cls;
   rStockWrap.textContent = text;
 }

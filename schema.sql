@@ -7,6 +7,9 @@ CREATE TABLE IF NOT EXISTS products (
     cost_price_rupees INTEGER,
     category TEXT,
     supplier_id INTEGER REFERENCES suppliers(id),
+    reorder_level INTEGER, -- NULL = use global default (lowStockThreshold in main.go)
+    reorder_qty INTEGER,   -- suggested order quantity, shown on the reorder list
+
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -25,7 +28,8 @@ CREATE TABLE IF NOT EXISTS transaction_items (
     product_id INTEGER NOT NULL REFERENCES products(id),
     quantity INTEGER NOT NULL,
     unit_price_rupees INTEGER NOT NULL,
-    line_total_rupees INTEGER NOT NULL
+    line_total_rupees INTEGER NOT NULL,
+    cost_price_at_sale_rupees INTEGER -- per-unit cost snapshot at checkout; NULL = unknown (pre-snapshot rows or product had no cost)
 );
 
 CREATE INDEX IF NOT EXISTS idx_items_transaction ON transaction_items(transaction_id);

@@ -52,7 +52,7 @@
 
 {{if .LowOnly}}
 <div class="banner filter-banner">
-  Showing only items with stock below {{.Threshold}}.
+  Showing items below their reorder level (default {{.Threshold}} if not set per product).
   <a href="/products">Show all products</a>
 </div>
 {{else if .LowCount}}
@@ -71,6 +71,11 @@
       <th>Category</th>
       <th class="right">Price (Rs.)</th>
       <th class="right">Stock</th>
+      {{if .LowOnly}}
+      <th class="right">Reorder level</th>
+      <th class="right">Order qty</th>
+      <th>Supplier</th>
+      {{end}}
       <th></th>
     </tr>
   </thead>
@@ -81,7 +86,12 @@
       <td>{{.Name}}</td>
       <td>{{if .Category}}{{.Category}}{{else}}—{{end}}</td>
       <td class="right">{{.PriceRupees}}</td>
-      <td class="right {{if lt .Stock $.Threshold}}low{{end}}">{{.Stock}}</td>
+      <td class="right {{if lt .Stock .Threshold}}low{{end}}">{{.Stock}}</td>
+      {{if $.LowOnly}}
+      <td class="right">{{.Threshold}}</td>
+      <td class="right">{{if .ReorderQty.Valid}}{{.ReorderQty.Int64}}{{else}}—{{end}}</td>
+      <td>{{if .SupplierName}}{{.SupplierName}}{{else}}Unassigned{{end}}</td>
+      {{end}}
       <td><a href="/products/{{.ID}}/edit" style="color:#0972d3;text-decoration:none;">Edit</a></td>
     </tr>
     {{end}}

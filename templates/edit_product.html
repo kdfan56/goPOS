@@ -70,6 +70,16 @@
     <input id="category" name="category" value="{{.Category}}">
   </div>
   <div class="field">
+    <label for="reorder_level">Reorder level</label>
+    <span class="hint">Alert when stock drops below this. Blank = default (10).</span>
+    <input id="reorder_level" name="reorder_level" type="number" min="0" step="1" value="{{.ReorderLevel}}">
+  </div>
+  <div class="field">
+    <label for="reorder_qty">Reorder quantity</label>
+    <span class="hint">Suggested amount to order. Shown on the low-stock list. Blank = none.</span>
+    <input id="reorder_qty" name="reorder_qty" type="number" min="0" step="1" value="{{.ReorderQty}}">
+  </div>
+  <div class="field">
     <label for="supplier_id">Supplier</label>
     <select id="supplier_id" name="supplier_id">
       <option value="">— None —</option>
