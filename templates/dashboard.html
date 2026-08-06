@@ -5,7 +5,12 @@
 <title>Dashboard — goPOS</title>
 <style>
   body {
-    margin: 0; background: #f2f3f3; color: #16191f;
+    margin: 0;
+    /* Warm paper gradient + faint weave texture. Two-tone breaks the flat grey;
+       the texture is ~2.5% opacity so it reads as depth, not pattern. */
+    background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24'%3E%3Cpath d='M12 0h2v24h-2zM0 12h24v2H0z' fill='%23605a4e' fill-opacity='0.025'/%3E%3C/svg%3E"),
+      linear-gradient(180deg, #f6f4ef 0%, #ece8e0 100%);
+    color: #16191f;
     font-family: "Amazon Ember", "Helvetica Neue", Roboto, Arial, sans-serif;
   }
   .gp-content { max-width: 1100px; margin: 0 auto; padding: 1.5rem 1rem; }

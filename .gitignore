@@ -4,7 +4,8 @@ pos.db
 pos.db.testbak
 
 # TLS cert + private key — even self-signed, keys should never be in git.
-# Regenerate with the openssl command in decisions/06-https-and-basic-auth.md.
+# Regenerate: openssl req -x509 -newkey rsa:2048 -nodes -keyout key.pem \
+#   -out cert.pem -days 365 -subj "/CN=localhost"
 cert.pem
 key.pem
 
