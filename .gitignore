@@ -31,3 +31,8 @@ KARPATHY.md
 .playwright-mcp/
 reasonix.toml
 dashboard-before.png
+
+# Kept local only (recovered), never pushed — project notes/journal
+CLAUDE.md
+docs/
+decisions/
