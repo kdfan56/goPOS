@@ -26,3 +26,8 @@ KARPATHY.md
 
 # AI tool internal state
 .reasonix/
+
+# Browser-automation artifacts, AI tool config, scratch screenshots — not code
+.playwright-mcp/
+reasonix.toml
+dashboard-before.png
