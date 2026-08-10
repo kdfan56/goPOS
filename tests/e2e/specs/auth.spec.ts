@@ -44,7 +44,7 @@ test.describe('Authentication and Role Access', () => {
       const resp = await page.goto('/');
       expect(resp?.status()).toBe(200);
       await expect(page.locator('h1')).toHaveText('Dashboard');
-      await expect(page.locator('.tile')).toHaveCount(4);
+      await expect(page.locator('.tile')).toHaveCount(5);
     });
 
     test('can access products page', async ({ page }) => {

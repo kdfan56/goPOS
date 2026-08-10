@@ -4,10 +4,10 @@ test.use({ httpCredentials: { username: 'testadmin', password: 'testpass' } });
 
 test.describe('Smoke tests — key pages load correctly', () => {
 
-  test('dashboard shows 4 summary tiles', async ({ page }) => {
+  test('dashboard shows 5 summary tiles', async ({ page }) => {
     await page.goto('/');
-    await expect(page.locator('.tile')).toHaveCount(4);
-    await expect(page.locator('.tile .label')).toContainText(['Today\'s Sale', 'Transactions', 'Low Stock']);
+    await expect(page.locator('.tile')).toHaveCount(5);
+    await expect(page.locator('.tile .label')).toContainText(['Today\'s Sale', 'Transactions', 'Avg Basket', 'Low Stock']);
     await expect(page.locator('.panel')).toHaveCount(2);
   });
 

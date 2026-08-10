@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"html/template"
 	"log"
+	"math"
 	"net/http"
 	"os"
 	"strconv"
@@ -968,6 +969,8 @@ type dashboardData struct {
 	TodaySalesRs  string
 	TodayCount    int
 	TodayReturns  int
+	TodayBasketRs string
+	Week7BasketRs string
 	MonthLabel    string
 	MonthSalesRs  string
 	LowStockCount int
@@ -999,6 +1002,25 @@ func formatRupees(n int) string {
 	return b.String()
 }
 
+// avgBasketRupees divides SALE money by a SALES-ONLY transaction count.
+// Both arguments must cover the same rows: sale money on top, sale count below
+// (decision 23). A return is not a basket, so it belongs in neither. Do NOT
+// pass a net money total here, even though decision 19 makes every other money
+// SUM in this file net correctly — a refund usually settles an earlier day's
+// receipt, so it would subtract money whose basket is not in the divisor.
+//
+// saleRupees is therefore never negative, and math.Round never has to round a
+// negative half. Keep it that way: Go rounds a half away from zero and the
+// JavaScript in the e2e test rounds a half toward +infinity, so a negative
+// input would make the two disagree at exactly .5.
+func avgBasketRupees(saleRupees, salesCount int) string {
+	if salesCount == 0 {
+		return "—"
+	}
+	avg := float64(saleRupees) / float64(salesCount)
+	return formatRupees(int(math.Round(avg)))
+}
+
 func dashboardHandler(db *sql.DB, tmpl *template.Template) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 
@@ -1013,14 +1035,20 @@ func dashboardHandler(db *sql.DB, tmpl *template.Template) http.HandlerFunc {
 		todayISO := today.Format("2006-01-02")
 		monthKey := nowLocal.Format("2006-01")
 
-		var todayTotal, todayCount, todayReturns int
+		// todayTotal nets refunds, because that money really did leave the till
+		// today. todaySaleTotal counts sale rows only, and it exists for the
+		// average basket: a refund is usually against an EARLIER day's receipt,
+		// so netting it against a count of TODAY's baskets divides two different
+		// sets of transactions. See decision 23.
+		var todayTotal, todaySaleTotal, todayCount, todayReturns int
 		err := db.QueryRow(
 			`SELECT COALESCE(SUM(total_rupees), 0),
+			        COALESCE(SUM(CASE WHEN kind = 'sale' THEN total_rupees ELSE 0 END), 0),
 			        COALESCE(SUM(CASE WHEN kind = 'sale' THEN 1 ELSE 0 END), 0),
 			        COALESCE(SUM(CASE WHEN kind = 'return' THEN 1 ELSE 0 END), 0)
 			 FROM transactions
 			 WHERE date(created_at, '+5 hours') = ?`, todayISO,
-		).Scan(&todayTotal, &todayCount, &todayReturns)
+		).Scan(&todayTotal, &todaySaleTotal, &todayCount, &todayReturns)
 		if err != nil {
 			log.Printf("dashboard today query: %v", err)
 			http.Error(w, "failed to load dashboard", http.StatusInternalServerError)
@@ -1096,11 +1124,16 @@ func dashboardHandler(db *sql.DB, tmpl *template.Template) http.HandlerFunc {
 			}
 			daysMap[iso] = &DailySales{Date: iso, Display: display, IsToday: i == 0}
 		}
+		// saleTotalByDay feeds the 7-day average basket only. It is kept out of
+		// DailySales on purpose: that type is shared with /reports, which has no
+		// use for it. See decision 23 for why the average needs its own number.
+		saleTotalByDay := make(map[string]int, 7)
 		reportRows, err := db.Query(`
 			SELECT date(created_at, '+5 hours') AS day,
 			       SUM(CASE WHEN payment_method = 'cash' THEN total_rupees ELSE 0 END),
 			       SUM(CASE WHEN payment_method = 'card' THEN total_rupees ELSE 0 END),
 			       SUM(total_rupees),
+			       SUM(CASE WHEN kind = 'sale' THEN total_rupees ELSE 0 END),
 			       SUM(CASE WHEN kind = 'sale' THEN 1 ELSE 0 END),
 			       SUM(CASE WHEN kind = 'return' THEN 1 ELSE 0 END)
 			FROM transactions
@@ -1115,8 +1148,8 @@ func dashboardHandler(db *sql.DB, tmpl *template.Template) http.HandlerFunc {
 		defer reportRows.Close()
 		for reportRows.Next() {
 			var day string
-			var cash, card, total, count, returns int
-			if err := reportRows.Scan(&day, &cash, &card, &total, &count, &returns); err != nil {
+			var cash, card, total, saleTotal, count, returns int
+			if err := reportRows.Scan(&day, &cash, &card, &total, &saleTotal, &count, &returns); err != nil {
 				log.Printf("dashboard report scan: %v", err)
 				http.Error(w, "failed to load dashboard", http.StatusInternalServerError)
 				return
@@ -1127,6 +1160,7 @@ func dashboardHandler(db *sql.DB, tmpl *template.Template) http.HandlerFunc {
 				ds.TotalRupees = total
 				ds.TxnCount = count
 				ds.ReturnCount = returns
+				saleTotalByDay[day] = saleTotal
 			}
 		}
 		reportDays := make([]DailySales, 0, 7)
@@ -1134,11 +1168,13 @@ func dashboardHandler(db *sql.DB, tmpl *template.Template) http.HandlerFunc {
 			TodaySalesRs:  formatRupees(todayTotal),
 			TodayCount:    todayCount,
 			TodayReturns:  todayReturns,
+			TodayBasketRs: avgBasketRupees(todaySaleTotal, todayCount),
 			MonthLabel:    nowLocal.Format("Jan 2006"),
 			MonthSalesRs:  formatRupees(monthTotal),
 			LowStockCount: lowStockCount,
 			TopItems:      top,
 		}
+		grandSaleTotal := 0
 		for _, iso := range orderedDays {
 			ds := *daysMap[iso]
 			reportDays = append(reportDays, ds)
@@ -1147,8 +1183,12 @@ func dashboardHandler(db *sql.DB, tmpl *template.Template) http.HandlerFunc {
 			data.GrandTotal += ds.TotalRupees
 			data.GrandCount += ds.TxnCount
 			data.GrandReturn += ds.ReturnCount
+			grandSaleTotal += saleTotalByDay[iso]
 		}
 		data.ReportDays = reportDays
+		// today alone is noisy first thing in the morning, so the tile also
+		// shows the 7-day figure as a baseline to compare against
+		data.Week7BasketRs = avgBasketRupees(grandSaleTotal, data.GrandCount)
 
 		if err := tmpl.ExecuteTemplate(w, "dashboard.html", data); err != nil {
 			log.Printf("render dashboard: %v", err)

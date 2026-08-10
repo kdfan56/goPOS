@@ -225,4 +225,59 @@ test.describe('Returns', () => {
 
     await expect(page.locator('#lookup-status')).toContainText('is a return, not a sale');
   });
+
+  /**
+   * Decision 23: the avg basket tile must divide SALE money by the SALE count.
+   * A refund normally settles an earlier day's receipt, so netting it against a
+   * count of today's baskets divides two different sets of transactions.
+   *
+   * This test refunds part of a sale, so today always holds a return by the
+   * time it reads the dashboard. That makes the two candidate numerators differ
+   * by exactly the refund. The tile must sit ABOVE the net-money figure:
+   *  - correct code (sale money)  -> avgBasket  >  netMoney / salesCount
+   *  - the bug (net money)        -> avgBasket === netMoney / salesCount
+   * The refund is deliberately large so the gap survives rounding even when
+   * other specs have added many sales to the shared DB.
+   *
+   * Every number is read from ONE page load, so parallel workers cannot skew
+   * the comparison and the test is safe to run in any order.
+   */
+  test('avg basket divides sale money by sale count, not net money', async ({ page }) => {
+    const REFUND_QTY = 3;
+    const saleId = await makeSale(page, 4);
+
+    await page.goto('/pos/return');
+    await page.locator('#sale-id').fill(String(saleId));
+    await page.locator('#lookup-btn').click();
+    await expect(page.locator('#sale-panel')).toBeVisible();
+    await page.locator('#lines .qty-input').first().fill(String(REFUND_QTY));
+    const [slip] = await Promise.all([
+      page.waitForEvent('popup', { timeout: 10000 }),
+      page.locator('#submit-btn').click(),
+    ]);
+    await slip.close();
+
+    await page.goto('/');
+    const tiles = page.locator('.tile');
+    // Pin the labels: the reads below are positional, and a reordered tile
+    // would otherwise compare the wrong numbers with a confusing message.
+    await expect(tiles.nth(0).locator('.label')).toHaveText("Today's Sale");
+    await expect(tiles.nth(1).locator('.label')).toHaveText("Today's Transactions");
+    await expect(tiles.nth(2).locator('.label')).toHaveText('Avg Basket');
+    // A return today is what makes the two numerators differ at all.
+    await expect(tiles.nth(1).locator('.subline')).toContainText('return');
+
+    const readNumber = async (i: number) => {
+      const text = await tiles.nth(i).locator('.value').textContent();
+      return parseInt(text!.replace(/[^0-9-]/g, ''), 10);
+    };
+    const netMoney = await readNumber(0);
+    const salesCount = await readNumber(1);
+    const avgBasket = await readNumber(2);
+
+    expect(salesCount).toBeGreaterThan(0);
+    expect(avgBasket).toBeGreaterThan(Math.round(netMoney / salesCount));
+    // Sale money is never negative, so neither is the average.
+    expect(avgBasket).toBeGreaterThan(0);
+  });
 });

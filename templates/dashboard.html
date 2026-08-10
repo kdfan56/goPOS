@@ -81,6 +81,11 @@
       {{if .TodayReturns}}<div class="subline">{{.TodayReturns}} return{{if ne .TodayReturns 1}}s{{end}} (not counted above)</div>{{end}}
     </div>
     <div class="tile">
+      <div class="label">Avg Basket</div>
+      <div class="value">Rs. {{.TodayBasketRs}}</div>
+      <div class="subline">7-day avg: Rs. {{.Week7BasketRs}}</div>
+    </div>
+    <div class="tile">
       <div class="label">{{.MonthLabel}} Sale</div>
       <div class="value">Rs. {{.MonthSalesRs}}</div>
     </div>
