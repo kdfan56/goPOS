@@ -134,4 +134,47 @@ test.describe('POS Terminal', () => {
     await expect(page.locator('#msg')).toHaveText(/not found/);
     await expect(page.locator('#msg')).toHaveClass(/error/);
   });
+
+  // Station identity (decision 25). The label is unique per run, so that
+  // parallel workers cannot land on the same till and break the count.
+  test('a sale records the till that rang it up', async ({ page }) => {
+    const till = 'T' + Date.now().toString().slice(-8);
+
+    await page.goto('/pos?station=' + till);
+    await expect(page.locator('#gpStation')).toHaveText('Till ' + till);
+
+    await page.locator('#barcode').fill(SEED_BARCODE);
+    await page.locator('#barcode').press('Enter');
+    await page.waitForTimeout(300);
+
+    const [receiptPage] = await Promise.all([
+      page.waitForEvent('popup', { timeout: 10000 }),
+      page.locator('#pay-cash').click(),
+    ]);
+    await receiptPage.close();
+
+    // The till reaches the dashboard as its own row, with exactly this sale.
+    await page.goto('/');
+    const row = page.locator('.panel', { hasText: "Today's Sale — by till" })
+                    .locator('tbody tr', { hasText: till });
+    await expect(row).toHaveCount(1);
+    await expect(row.locator('td').nth(1)).toHaveText('1');
+    await expect(row.locator('td').nth(2)).toHaveText(String(SEED_PRICE));
+  });
+
+  // The station survives a reload without the query parameter, because a till
+  // is set up once with a bookmark and then used all day.
+  test('the till is remembered after the query parameter is gone', async ({ page }) => {
+    const till = 'R' + Date.now().toString().slice(-8);
+
+    await page.goto('/pos?station=' + till);
+    await expect(page.locator('#gpStation')).toHaveText('Till ' + till);
+
+    await page.goto('/pos');
+    await expect(page.locator('#gpStation')).toHaveText('Till ' + till);
+
+    // An empty value clears it, so a till can be un-assigned without devtools.
+    await page.goto('/pos?station=');
+    await expect(page.locator('#gpStation')).toHaveText('Till not set');
+  });
 });

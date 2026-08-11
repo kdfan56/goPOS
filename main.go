@@ -25,6 +25,60 @@ var storeLocation *time.Location
 
 const lowStockThreshold = 10
 
+// dashboardWindowDays is the look-back for the dashboard panels that show a
+// trend rather than today: top sellers, category and payment contribution, and
+// the sale-versus-purchase comparison.
+//
+// It is 30 to match the old iPOS Main screen, so that dad compares the same
+// number he compares today (decision 24). Measured at 55k transactions, the
+// whole page answers in well under a second at this width.
+const dashboardWindowDays = 30
+
+// dashboardReorderLimit caps the reorder strip on the dashboard. The full list
+// lives at /products?low=1 and the panel links to it.
+const dashboardReorderLimit = 12
+
+// dashboardContribLimit caps how many rows a contribution panel shows. The
+// share column still divides by the WHOLE window — see loadContribution.
+const dashboardContribLimit = 15
+
+// dashboardChartMonths is the width of the monthly sale chart. Twelve months
+// matches the iPOS "Monthly Sale Report (Year)" panel, and it also means every
+// month name appears one time only, so a bar needs no year on its label.
+const dashboardChartMonths = 12
+
+// activeSalesWindowDays decides which products the reorder list is allowed to
+// show (decision 26). A product counts as live when it has sold at least one
+// unit inside this window.
+//
+// The iPOS export holds every SKU the store ever sold, not the SKUs it sells
+// now: 5,562 of 10,529 products sit at zero stock or less. Without this filter
+// the low-stock count read 8,850 and the reorder list was unreadable.
+//
+// The number is a guess. Change it here and all three low-stock sites follow.
+const activeSalesWindowDays = 90
+
+// soldRecentlySQL keeps a dead SKU off the reorder list. `idExpr` is the product
+// id column of the outer query, normally "p.id".
+//
+// WARNING: this is an IN subquery and NOT a correlated EXISTS. The difference is
+// measured, not stylistic. A correlated EXISTS re-runs once per product: 0.38s
+// here, and it needs its own index on transaction_items(product_id) to be even
+// that fast. The IN form builds the recently-sold set one time and the planner
+// answers it from idx_transactions_created plus idx_items_transaction: 0.046s,
+// same answer. Do not "simplify" this back into an EXISTS.
+//
+// NOTE: scanHandler deliberately does NOT use this. Scanning one product asks
+// "is THIS item low", and that answer must not depend on the sales history of
+// the shop.
+func soldRecentlySQL(idExpr string) string {
+	return fmt.Sprintf(`%s IN (
+		SELECT ti.product_id FROM transaction_items ti
+		JOIN transactions t ON t.id = ti.transaction_id
+		WHERE t.created_at >= datetime('now', '-%d days')
+	)`, idExpr, activeSalesWindowDays)
+}
+
 type Product struct {
 	ID           int
 	Barcode      string
@@ -88,6 +142,9 @@ func main() {
 		// SQLite DOES accept a CHECK on ADD COLUMN — verified against this driver.
 		`ALTER TABLE transactions ADD COLUMN kind TEXT NOT NULL DEFAULT 'sale' CHECK(kind IN ('sale','return'))`,
 		`ALTER TABLE transactions ADD COLUMN original_transaction_id INTEGER REFERENCES transactions(id)`,
+		// Which till rang the sale (decision 25). Nullable, and never backfilled:
+		// every row written before this column existed truthfully has no station.
+		`ALTER TABLE transactions ADD COLUMN station TEXT`,
 	} {
 		if _, err := db.Exec(col); err != nil && !strings.Contains(err.Error(), "duplicate column") {
 			log.Fatalf("migrate: %v", err)
@@ -390,6 +447,29 @@ type checkoutItem struct {
 type checkoutRequest struct {
 	PaymentMethod string         `json:"payment_method"`
 	Items         []checkoutItem `json:"items"`
+	// Which till sent this (decision 25). Self-reported and empty when the
+	// terminal was never given one. Empty is stored as NULL, never as "".
+	Station string `json:"station"`
+}
+
+// stationValue turns the self-reported station into what the column should hold.
+// An unset terminal stores NULL, because NULL is the truthful "we do not know".
+// The value is trimmed and capped: it comes from a URL that a cashier can edit,
+// and it is a label on a dashboard, not a key.
+func stationValue(s string) sql.NullString {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return sql.NullString{}
+	}
+	// Cut on a byte count, then drop a rune the cut split in half. The browser
+	// side truncates by UTF-16 units, so a non-ASCII till name arrives longer
+	// in bytes than it looks: seven 3-byte characters pass the JS cap and then
+	// land mid-sequence here. Without ToValidUTF8 the column stores invalid
+	// UTF-8, and the dashboard groups that broken string as its own till.
+	if len(s) > 20 {
+		s = strings.ToValidUTF8(s[:20], "")
+	}
+	return sql.NullString{String: s, Valid: true}
 }
 
 func checkoutHandler(db *sql.DB) http.HandlerFunc {
@@ -458,8 +538,8 @@ func checkoutHandler(db *sql.DB) http.HandlerFunc {
 		}
 
 		res, err := tx.ExecContext(ctx,
-			"INSERT INTO transactions (total_rupees, payment_method) VALUES (?, ?)",
-			total, req.PaymentMethod,
+			"INSERT INTO transactions (total_rupees, payment_method, station) VALUES (?, ?, ?)",
+			total, req.PaymentMethod, stationValue(req.Station),
 		)
 		if err != nil {
 			log.Printf("insert transaction: %v", err)
@@ -965,22 +1045,88 @@ type dashboardTopItem struct {
 	RevenueRs string
 }
 
+// stationRow is one till in the "Today's Sale" panel. Station is already
+// display-ready: a NULL column becomes a readable label, never a blank cell.
+type stationRow struct {
+	Station  string
+	Count    int
+	SalesRs  string
+	BasketRs string
+}
+
+// refundRow is one refunded line in the "Today's Refunds" panel. Qty and
+// TotalRs are shown as POSITIVE magnitudes: the panel heading already says
+// these are refunds, and a column of minus signs is harder to read. The stored
+// rows stay negative (decision 19).
+type refundRow struct {
+	TransactionID int
+	Time          string
+	Name          string
+	Qty           int
+	TotalRs       string
+}
+
+// contribRow is one line of a "contribution" panel: a name, its money, and its
+// share of the total. Used by both the category panel and the payment-method
+// panel, because both are the same shape.
+type contribRow struct {
+	Name    string
+	TotalRs string
+	Percent string
+}
+
+// dayCompareRow is one day of the "Sale Purchase Comparison" panel.
+//
+// SaleRs is GROSS sale money and ReturnRs is the refunds, shown separately.
+// This is a deliberate exception to the decision 19 habit of letting every
+// money SUM net returns, and it is safe ONLY because the panel shows both
+// columns plus the net. iPOS splits them the same way. Do not copy this shape
+// into a panel that shows one money column — that one must net.
+type dayCompareRow struct {
+	Display    string
+	IsToday    bool
+	SaleRs     string
+	PurchaseRs string
+	ReturnRs   string
+	NetRs      string
+}
+
 type dashboardData struct {
-	TodaySalesRs  string
-	TodayCount    int
-	TodayReturns  int
-	TodayBasketRs string
-	Week7BasketRs string
-	MonthLabel    string
-	MonthSalesRs  string
-	LowStockCount int
-	TopItems      []dashboardTopItem
-	ReportDays    []DailySales
-	GrandCash     int
-	GrandCard     int
-	GrandTotal    int
-	GrandCount    int
-	GrandReturn   int
+	// Tiles
+	TodaySalesRs   string
+	TodayCount     int
+	TodayReturns   int
+	TodayBasketRs  string
+	Window30Basket string
+	MonthLabel     string
+	MonthSalesRs   string
+	LowStockCount  int
+
+	// Panels
+	Stations     []stationRow
+	MonthCount   int
+	MonthBasket  string
+	Refunds      []refundRow
+	TopItems     []dashboardTopItem
+	Categories   []contribRow
+	Methods      []contribRow
+	CompareDays  []dayCompareRow
+	ReorderItems []Product
+
+	// Charts (decision 24). Both are inline SVG built by buildBarChart.
+	MonthChart    barChart
+	CustomerChart barChart
+	ChartMonths   int
+
+	// Footers for the comparison panel
+	GrandSaleRs     string
+	GrandPurchaseRs string
+	GrandReturnRs   string
+	GrandNetRs      string
+
+	// How many days the 30-day panels cover, so the headings stay honest if
+	// the constant changes.
+	WindowDays int
 }
 
 func formatRupees(n int) string {
@@ -1021,6 +1167,445 @@ func avgBasketRupees(saleRupees, salesCount int) string {
 	return formatRupees(int(math.Round(avg)))
 }
 
+// percentOf renders a share of a total for a contribution panel.
+//
+// The total can legitimately be zero or negative on a quiet day, because a
+// money SUM nets refunds (decision 19). Dividing by it would print nonsense, so
+// those cases render an em dash instead.
+func percentOf(part, whole int) string {
+	if whole <= 0 {
+		return "—"
+	}
+	return strconv.FormatFloat(float64(part)/float64(whole)*100, 'f', 1, 64) + "%"
+}
+
+// loadTodayStations breaks today down by the till that rang it up (decision 25).
+// The money column nets refunds, because it is a single money column. The
+// basket divides sale money by sale count, because an average must take both
+// halves from the same rows (decision 23).
+func loadTodayStations(db *sql.DB, todayISO string) ([]stationRow, error) {
+	rows, err := db.Query(
+		`SELECT COALESCE(station, ''),
+		        COALESCE(SUM(CASE WHEN kind = 'sale' THEN 1 ELSE 0 END), 0),
+		        COALESCE(SUM(total_rupees), 0),
+		        COALESCE(SUM(CASE WHEN kind = 'sale' THEN total_rupees ELSE 0 END), 0)
+		   FROM transactions
+		  WHERE date(created_at, '+5 hours') = ?
+		  GROUP BY 1
+		  ORDER BY 1`, todayISO)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []stationRow
+	for rows.Next() {
+		var station string
+		var count, net, saleMoney int
+		if err := rows.Scan(&station, &count, &net, &saleMoney); err != nil {
+			return nil, err
+		}
+		if station == "" {
+			station = "Not set"
+		}
+		out = append(out, stationRow{
+			Station:  station,
+			Count:    count,
+			SalesRs:  formatRupees(net),
+			BasketRs: avgBasketRupees(saleMoney, count),
+		})
+	}
+	return out, rows.Err()
+}
+
+// loadTodayRefunds lists the lines refunded today. Quantities and totals are
+// flipped to positive for display only; the stored rows stay negative.
+func loadTodayRefunds(db *sql.DB, todayISO string) ([]refundRow, error) {
+	rows, err := db.Query(
+		`SELECT t.id, t.created_at, p.name, ti.quantity, ti.line_total_rupees
+		   FROM transactions t
+		   JOIN transaction_items ti ON ti.transaction_id = t.id
+		   JOIN products p ON p.id = ti.product_id
+		  WHERE t.kind = 'return'
+		    AND date(t.created_at, '+5 hours') = ?
+		  ORDER BY t.created_at DESC, ti.id
+		  LIMIT 20`, todayISO)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []refundRow
+	for rows.Next() {
+		var r refundRow
+		var when time.Time
+		var qty, total int
+		if err := rows.Scan(&r.TransactionID, &when, &r.Name, &qty, &total); err != nil {
+			return nil, err
+		}
+		r.Time = when.In(storeLocation).Format("3:04 PM")
+		r.Qty = -qty
+		r.TotalRs = formatRupees(-total)
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// loadContribution runs a "name, money, share of total" panel. Both the
+// category panel and the payment-method panel are this shape, so they share it.
+//
+// The money SUM is plain and therefore nets refunds by itself (decision 19).
+// Keep it that way: this panel shows ONE money column, so it must net.
+//
+// WARNING: the query must NOT carry a LIMIT. The share of each row is a share
+// of the whole window, so `grand` has to sum EVERY row. Pass the cap as
+// `limit` and the trim happens here, after the total is complete. A LIMIT in
+// the SQL silently turns the denominator into the top-N subtotal, and then the
+// shares add up to 100% while every one of them is too big. Measured with a
+// LIMIT 15 on 76 categories: the denominator was Rs 1,884,072 instead of
+// Rs 2,605,206, and "Food Item" read 14.0% when the truth was 10.1%.
+//
+// A limit of 0 means "no cap".
+func loadContribution(db *sql.DB, query, fromISO string, limit int) ([]contribRow, error) {
+	rows, err := db.Query(query, fromISO)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	type raw struct {
+		name  string
+		total int
+	}
+	var items []raw
+	grand := 0
+	for rows.Next() {
+		var it raw
+		if err := rows.Scan(&it.name, &it.total); err != nil {
+			return nil, err
+		}
+		items = append(items, it)
+		grand += it.total
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	if limit > 0 && len(items) > limit {
+		items = items[:limit]
+	}
+
+	out := make([]contribRow, 0, len(items))
+	for _, it := range items {
+		out = append(out, contribRow{
+			Name:    it.name,
+			TotalRs: formatRupees(it.total),
+			Percent: percentOf(it.total, grand),
+		})
+	}
+	return out, nil
+}
+
+// dayMoney is the per-day accumulator behind the sale-versus-purchase panel.
+type dayMoney struct {
+	sale      int
+	ret       int // positive magnitude
+	purchase  int
+	saleCount int
+}
+
+// loadCompareDays builds the sale-versus-purchase table.
+//
+// It reads two unrelated sources — transactions and finalized receiving
+// sessions — and merges them onto one row per day. Days with no activity in
+// either source still appear, which is the same scaffold-and-merge pattern the
+// reports page uses.
+//
+// CAVEAT (decision 20): the purchase figure uses the product's CURRENT cost
+// price, because receiving_session_items stores a quantity only. A later price
+// edit moves an old day's number.
+// It takes fromISO rather than deriving it. Every panel on the dashboard uses
+// the ONE boundary the handler computed, so that no panel can drift from the
+// others when the window changes (the WINDOW RULE).
+func loadCompareDays(db *sql.DB, today time.Time, days int, fromISO string) (map[string]*dayMoney, error) {
+	byDay := make(map[string]*dayMoney, days)
+	for i := 0; i < days; i++ {
+		byDay[today.AddDate(0, 0, -i).Format("2006-01-02")] = &dayMoney{}
+	}
+
+	txnRows, err := db.Query(
+		`SELECT date(created_at, '+5 hours') AS day,
+		        COALESCE(SUM(CASE WHEN kind = 'sale'   THEN total_rupees ELSE 0 END), 0),
+		        COALESCE(SUM(CASE WHEN kind = 'return' THEN -total_rupees ELSE 0 END), 0),
+		        COALESCE(SUM(CASE WHEN kind = 'sale'   THEN 1 ELSE 0 END), 0)
+		   FROM transactions
+		  WHERE date(created_at, '+5 hours') >= ?
+		  GROUP BY day`, fromISO)
+	if err != nil {
+		return nil, err
+	}
+	defer txnRows.Close()
+	for txnRows.Next() {
+		var day string
+		var sale, ret, count int
+		if err := txnRows.Scan(&day, &sale, &ret, &count); err != nil {
+			return nil, err
+		}
+		if d, ok := byDay[day]; ok {
+			d.sale, d.ret, d.saleCount = sale, ret, count
+		}
+	}
+	if err := txnRows.Err(); err != nil {
+		return nil, err
+	}
+
+	purRows, err := db.Query(
+		`SELECT date(rs.finalized_at, '+5 hours') AS day,
+		        COALESCE(SUM(rsi.qty * COALESCE(p.cost_price_rupees, 0)), 0)
+		   FROM receiving_sessions rs
+		   JOIN receiving_session_items rsi ON rsi.session_id = rs.id
+		   JOIN products p ON p.id = rsi.product_id
+		  WHERE rs.status = 'finalized'
+		    AND date(rs.finalized_at, '+5 hours') >= ?
+		  GROUP BY day`, fromISO)
+	if err != nil {
+		return nil, err
+	}
+	defer purRows.Close()
+	for purRows.Next() {
+		var day string
+		var purchase int
+		if err := purRows.Scan(&day, &purchase); err != nil {
+			return nil, err
+		}
+		if d, ok := byDay[day]; ok {
+			d.purchase = purchase
+		}
+	}
+	return byDay, purRows.Err()
+}
+
+// loadReorderStrip is the dashboard's slice of the reorder list. It shows the
+// most urgent items first: the ones furthest below their own reorder level.
+// It applies soldRecentlySQL, so it agrees with the tile and with
+// /products?low=1 (decision 26).
+func loadReorderStrip(db *sql.DB) ([]Product, error) {
+	rows, err := db.Query(
+		`SELECT p.id, p.barcode, p.name, p.price_rupees, p.stock,
+		        COALESCE(p.reorder_level, ?), p.reorder_qty, COALESCE(s.name, '')
+		   FROM products p
+		   LEFT JOIN suppliers s ON s.id = p.supplier_id
+		  WHERE p.stock < COALESCE(p.reorder_level, ?)
+		    AND `+soldRecentlySQL("p.id")+`
+		  ORDER BY (p.stock - COALESCE(p.reorder_level, ?)) ASC, p.name
+		  LIMIT ?`,
+		lowStockThreshold, lowStockThreshold, lowStockThreshold, dashboardReorderLimit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []Product
+	for rows.Next() {
+		var p Product
+		if err := rows.Scan(&p.ID, &p.Barcode, &p.Name, &p.PriceRupees, &p.Stock,
+			&p.Threshold, &p.ReorderQty, &p.SupplierName); err != nil {
+			return nil, err
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}
+
+// ── Inline SVG bar charts (decision 24) ────────────────────────────────────
+//
+// There is no chart library and no CDN. Go does every calculation and hands the
+// template a list of rectangles that are already placed. The template writes
+// SVG elements and never calculates. Two reasons: the arithmetic stays where a
+// debugger and a unit test can reach it, and the chart arrives inside the HTML,
+// so the three terminals need no second request and no internet.
+//
+// All numbers below are SVG user units. The <svg> carries a viewBox, so the
+// browser scales the whole drawing to the panel width.
+const (
+	chartWidth  = 620.0 // viewBox width
+	chartHeight = 200.0 // viewBox height
+	chartTopY   = 14.0  // headroom above the tallest bar
+	chartBaseY  = 158.0 // the axis line
+	chartLabelY = 176.0 // the label strip, below the axis
+	chartPadX   = 80.0  // left gutter, wide enough for the axis value text
+)
+
+// The gutter is 80 because the axis marks are right-anchored inside it and the
+// widest one this store can produce is a full money figure: "Rs. 99,999,999" is
+// 14 characters, and 14 characters of the 9px axis font measure about 70 units.
+// A narrower gutter clips the number off the left edge of the viewBox, which is
+// silent — the SVG still renders, the reader just cannot see the scale. If you
+// shorten the gutter, shorten the axis text in the same edit.
+
+const chartPlotHeight = chartBaseY - chartTopY
+
+// chartBar is one rectangle of a bar chart, already positioned.
+type chartBar struct {
+	X, Y, W, H float64
+	MidX       float64 // where the label under the axis is centred
+	Label      string  // blank when the label strip would be too crowded
+	Tip        string  // native browser tooltip, via <title>. No JavaScript.
+	Highlight  bool    // the newest bar, drawn in the brand colour
+}
+
+// barChart is a whole chart, ready for the template.
+type barChart struct {
+	Bars     []chartBar
+	Width    float64
+	Height   float64
+	BaseY    float64
+	LabelY   float64
+	PadX     float64
+	RightX   float64 // where a gridline stops; the template cannot subtract
+	PeakY    float64
+	HalfY    float64
+	PeakText string
+	HalfText string
+	Empty    bool
+}
+
+// svgRound trims a coordinate to one decimal place. SVG accepts any precision,
+// but 24.653333333333336 in the page source helps nobody read it.
+func svgRound(f float64) float64 { return math.Round(f*10) / 10 }
+
+// buildBarChart lays out one chart. `labels` are the short names under the
+// axis, `tips` the long names inside the tooltip, and `format` renders a value
+// for both the tooltip and the two axis marks.
+//
+// labelEvery thins the label strip: 1 labels every bar, 5 labels every fifth.
+// The count runs from the END of the slice, so the newest bar always keeps its
+// label — that is the one the reader looks for first.
+//
+// A value can be negative, because a single money column nets refunds
+// (decision 19) and a quiet month can net below zero. A negative bar has no
+// honest height on a zero-based axis, so it draws as nothing.
+//
+// WARNING: "nothing" means the tooltip goes too. SVG disables rendering of a
+// rect with height="0", so it has no hit area and its <title> never fires. A
+// zero month and a negative month are therefore both an empty slot that the
+// reader cannot interrogate. That is the accepted cost of a zero-based axis;
+// do not write a comment claiming the number stays reachable, because it does
+// not. A value ABOVE zero is different — see the 1-unit floor below.
+func buildBarChart(values []int, labels, tips []string, labelEvery int, format func(int) string) barChart {
+	c := barChart{
+		Width:  chartWidth,
+		Height: chartHeight,
+		BaseY:  chartBaseY,
+		LabelY: chartLabelY,
+		PadX:   chartPadX,
+		RightX: chartWidth - 10,
+		PeakY:  chartTopY,
+		HalfY:  svgRound(chartBaseY - chartPlotHeight/2),
+	}
+	if len(values) == 0 {
+		c.Empty = true
+		return c
+	}
+
+	peak := 0
+	for _, v := range values {
+		if v > peak {
+			peak = v
+		}
+	}
+	if peak <= 0 {
+		c.Empty = true
+		return c
+	}
+	c.PeakText = format(peak)
+	c.HalfText = format(peak / 2)
+
+	slot := (chartWidth - chartPadX - 10) / float64(len(values))
+	barW := slot * 0.68
+
+	for i, v := range values {
+		h := 0.0
+		if v > 0 {
+			h = float64(v) / float64(peak) * chartPlotHeight
+			// A real but tiny value must still draw something. A zero-height
+			// rect is invisible AND its tooltip is unreachable, which would
+			// read as "no data" when the truth is "very little".
+			if h < 1 {
+				h = 1
+			}
+		}
+		label := ""
+		if (len(values)-1-i)%labelEvery == 0 {
+			label = labels[i]
+		}
+		left := chartPadX + float64(i)*slot
+		c.Bars = append(c.Bars, chartBar{
+			X:         svgRound(left + (slot-barW)/2),
+			Y:         svgRound(chartBaseY - h),
+			W:         svgRound(barW),
+			H:         svgRound(h),
+			MidX:      svgRound(left + slot/2),
+			Label:     label,
+			Tip:       tips[i] + " — " + format(v),
+			Highlight: i == len(values)-1,
+		})
+	}
+	return c
+}
+
+// loadMonthlySales reads net sale money per calendar month, oldest first.
+//
+// The money column nets refunds, because it is a single money column
+// (decision 19). Do not add a kind filter.
+//
+// It scaffolds every month before it queries, in the same way the reports page
+// scaffolds days, so a month with no sales draws a zero bar and not a gap.
+func loadMonthlySales(db *sql.DB, now time.Time, months int) ([]int, []string, []string, error) {
+	keys := make([]string, months)
+	labels := make([]string, months)
+	tips := make([]string, months)
+
+	// Starting from the 1st means AddDate can never overflow a short month.
+	firstOfThisMonth := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, storeLocation)
+	for i := 0; i < months; i++ {
+		m := firstOfThisMonth.AddDate(0, -(months - 1 - i), 0)
+		keys[i] = m.Format("2006-01")
+		labels[i] = m.Format("Jan")
+		tips[i] = m.Format("Jan 2006")
+	}
+
+	rows, err := db.Query(
+		`SELECT strftime('%Y-%m', created_at, '+5 hours') AS ym,
+		        COALESCE(SUM(total_rupees), 0)
+		   FROM transactions
+		  WHERE date(created_at, '+5 hours') >= ?
+		  GROUP BY ym`, keys[0]+"-01")
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	defer rows.Close()
+
+	byKey := make(map[string]int, months)
+	for rows.Next() {
+		var ym string
+		var total int
+		if err := rows.Scan(&ym, &total); err != nil {
+			return nil, nil, nil, err
+		}
+		byKey[ym] = total
+	}
+	if err := rows.Err(); err != nil {
+		return nil, nil, nil, err
+	}
+
+	values := make([]int, months)
+	for i, k := range keys {
+		values[i] = byKey[k]
+	}
+	return values, labels, tips, nil
+}
+
 func dashboardHandler(db *sql.DB, tmpl *template.Template) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 
@@ -1034,6 +1619,11 @@ func dashboardHandler(db *sql.DB, tmpl *template.Template) http.HandlerFunc {
 		today := time.Date(nowLocal.Year(), nowLocal.Month(), nowLocal.Day(), 0, 0, 0, 0, storeLocation)
 		todayISO := today.Format("2006-01-02")
 		monthKey := nowLocal.Format("2006-01")
+
+		// The window INCLUDES today, so it spans dashboardWindowDays-1 days back.
+		// Computed in Go rather than with date(?, '-29 days') in SQL, so that
+		// every panel provably uses the same boundary.
+		windowFromISO := today.AddDate(0, 0, -(dashboardWindowDays - 1)).Format("2006-01-02")
 
 		// todayTotal nets refunds, because that money really did leave the till
 		// today. todaySaleTotal counts sale rows only, and it exists for the
@@ -1055,28 +1645,36 @@ func dashboardHandler(db *sql.DB, tmpl *template.Template) http.HandlerFunc {
 			return
 		}
 
-		var monthTotal int
+		// monthTotal nets refunds, for the same reason todayTotal does.
+		// monthSaleTotal and monthCount feed the month's average basket, and
+		// they must both come from sale rows only (decision 23).
+		var monthTotal, monthSaleTotal, monthCount int
 		err = db.QueryRow(
-			`SELECT COALESCE(SUM(total_rupees), 0)
+			`SELECT COALESCE(SUM(total_rupees), 0),
+			        COALESCE(SUM(CASE WHEN kind = 'sale' THEN total_rupees ELSE 0 END), 0),
+			        COALESCE(SUM(CASE WHEN kind = 'sale' THEN 1 ELSE 0 END), 0)
 			 FROM transactions
 			 WHERE strftime('%Y-%m', created_at, '+5 hours') = ?`, monthKey,
-		).Scan(&monthTotal)
+		).Scan(&monthTotal, &monthSaleTotal, &monthCount)
 		if err != nil {
 			log.Printf("dashboard month query: %v", err)
 			http.Error(w, "failed to load dashboard", http.StatusInternalServerError)
 			return
 		}
 
+		// HAVING qty > 0 matters: a sale made before the window whose RETURN
+		// lands inside it nets negative, and a negative row must never reach a
+		// "top sellers" list.
 		rows, err := db.Query(
 			`SELECT p.id, p.name, SUM(ti.quantity) AS qty, SUM(ti.line_total_rupees) AS revenue
 			 FROM transaction_items ti
 			 JOIN transactions t ON t.id = ti.transaction_id
 			 JOIN products p ON p.id = ti.product_id
-			 WHERE date(t.created_at, '+5 hours') >= date(?, '-6 days')
+			 WHERE date(t.created_at, '+5 hours') >= ?
 			 GROUP BY p.id
 			 HAVING qty > 0
 			 ORDER BY qty DESC, revenue DESC
-			 LIMIT 5`, todayISO,
+			 LIMIT 15`, windowFromISO,
 		)
 		if err != nil {
 			log.Printf("dashboard top query: %v", err)
@@ -1097,73 +1695,87 @@ func dashboardHandler(db *sql.DB, tmpl *template.Template) http.HandlerFunc {
 			it.RevenueRs = formatRupees(revenue)
 			top = append(top, it)
 		}
+		if err := rows.Err(); err != nil {
+			log.Printf("dashboard top rows: %v", err)
+			http.Error(w, "failed to load dashboard", http.StatusInternalServerError)
+			return
+		}
 
+		// This count MUST match the ?low=1 page it links to, so both use
+		// soldRecentlySQL. See decision 26.
 		var lowStockCount int
 		if err := db.QueryRow(
-			`SELECT COUNT(*) FROM products WHERE stock < COALESCE(reorder_level, ?)`, lowStockThreshold,
+			`SELECT COUNT(*) FROM products p
+			  WHERE p.stock < COALESCE(p.reorder_level, ?)
+			    AND `+soldRecentlySQL("p.id"), lowStockThreshold,
 		).Scan(&lowStockCount); err != nil {
 			log.Printf("dashboard low stock query: %v", err)
 			http.Error(w, "failed to load dashboard", http.StatusInternalServerError)
 			return
 		}
 
-		daysMap := make(map[string]*DailySales, 7)
-		orderedDays := make([]string, 0, 7)
-		for i := 0; i < 7; i++ {
-			d := today.AddDate(0, 0, -i)
-			iso := d.Format("2006-01-02")
-			orderedDays = append(orderedDays, iso)
-			var display string
-			switch i {
-			case 0:
-				display = "Today (" + d.Format("Mon 2 Jan") + ")"
-			case 1:
-				display = "Yesterday (" + d.Format("Mon 2 Jan") + ")"
-			default:
-				display = d.Format("Mon 2 Jan")
-			}
-			daysMap[iso] = &DailySales{Date: iso, Display: display, IsToday: i == 0}
-		}
-		// saleTotalByDay feeds the 7-day average basket only. It is kept out of
-		// DailySales on purpose: that type is shared with /reports, which has no
-		// use for it. See decision 23 for why the average needs its own number.
-		saleTotalByDay := make(map[string]int, 7)
-		reportRows, err := db.Query(`
-			SELECT date(created_at, '+5 hours') AS day,
-			       SUM(CASE WHEN payment_method = 'cash' THEN total_rupees ELSE 0 END),
-			       SUM(CASE WHEN payment_method = 'card' THEN total_rupees ELSE 0 END),
-			       SUM(total_rupees),
-			       SUM(CASE WHEN kind = 'sale' THEN total_rupees ELSE 0 END),
-			       SUM(CASE WHEN kind = 'sale' THEN 1 ELSE 0 END),
-			       SUM(CASE WHEN kind = 'return' THEN 1 ELSE 0 END)
-			FROM transactions
-			WHERE date(created_at, '+5 hours') >= date(?, '-6 days')
-			GROUP BY day
-		`, todayISO)
+		stations, err := loadTodayStations(db, todayISO)
 		if err != nil {
-			log.Printf("dashboard report query: %v", err)
+			log.Printf("dashboard stations query: %v", err)
 			http.Error(w, "failed to load dashboard", http.StatusInternalServerError)
 			return
 		}
-		defer reportRows.Close()
-		for reportRows.Next() {
-			var day string
-			var cash, card, total, saleTotal, count, returns int
-			if err := reportRows.Scan(&day, &cash, &card, &total, &saleTotal, &count, &returns); err != nil {
-				log.Printf("dashboard report scan: %v", err)
-				http.Error(w, "failed to load dashboard", http.StatusInternalServerError)
-				return
-			}
-			if ds, ok := daysMap[day]; ok {
-				ds.CashRupees = cash
-				ds.CardRupees = card
-				ds.TotalRupees = total
-				ds.TxnCount = count
-				ds.ReturnCount = returns
-				saleTotalByDay[day] = saleTotal
-			}
+
+		refunds, err := loadTodayRefunds(db, todayISO)
+		if err != nil {
+			log.Printf("dashboard refunds query: %v", err)
+			http.Error(w, "failed to load dashboard", http.StatusInternalServerError)
+			return
 		}
-		reportDays := make([]DailySales, 0, 7)
+
+		categories, err := loadContribution(db,
+			`SELECT COALESCE(NULLIF(p.category, ''), 'Uncategorised'),
+			        COALESCE(SUM(ti.line_total_rupees), 0) AS total
+			   FROM transaction_items ti
+			   JOIN transactions t ON t.id = ti.transaction_id
+			   JOIN products p ON p.id = ti.product_id
+			  WHERE date(t.created_at, '+5 hours') >= ?
+			  GROUP BY 1
+			  ORDER BY total DESC`, windowFromISO, dashboardContribLimit)
+		if err != nil {
+			log.Printf("dashboard category query: %v", err)
+			http.Error(w, "failed to load dashboard", http.StatusInternalServerError)
+			return
+		}
+
+		methods, err := loadContribution(db,
+			`SELECT UPPER(payment_method), COALESCE(SUM(total_rupees), 0) AS total
+			   FROM transactions
+			  WHERE date(created_at, '+5 hours') >= ?
+			  GROUP BY 1
+			  ORDER BY total DESC`, windowFromISO, 0)
+		if err != nil {
+			log.Printf("dashboard method query: %v", err)
+			http.Error(w, "failed to load dashboard", http.StatusInternalServerError)
+			return
+		}
+
+		byDay, err := loadCompareDays(db, today, dashboardWindowDays, windowFromISO)
+		if err != nil {
+			log.Printf("dashboard compare query: %v", err)
+			http.Error(w, "failed to load dashboard", http.StatusInternalServerError)
+			return
+		}
+
+		reorder, err := loadReorderStrip(db)
+		if err != nil {
+			log.Printf("dashboard reorder query: %v", err)
+			http.Error(w, "failed to load dashboard", http.StatusInternalServerError)
+			return
+		}
+
+		monthValues, monthLabels, monthTips, err := loadMonthlySales(db, nowLocal, dashboardChartMonths)
+		if err != nil {
+			log.Printf("dashboard monthly chart query: %v", err)
+			http.Error(w, "failed to load dashboard", http.StatusInternalServerError)
+			return
+		}
+
 		data := dashboardData{
 			TodaySalesRs:  formatRupees(todayTotal),
 			TodayCount:    todayCount,
@@ -1171,24 +1783,86 @@ func dashboardHandler(db *sql.DB, tmpl *template.Template) http.HandlerFunc {
 			TodayBasketRs: avgBasketRupees(todaySaleTotal, todayCount),
 			MonthLabel:    nowLocal.Format("Jan 2006"),
 			MonthSalesRs:  formatRupees(monthTotal),
+			MonthCount:    monthCount,
+			MonthBasket:   avgBasketRupees(monthSaleTotal, monthCount),
 			LowStockCount: lowStockCount,
+			Stations:      stations,
+			Refunds:       refunds,
 			TopItems:      top,
+			Categories:    categories,
+			Methods:       methods,
+			ReorderItems:  reorder,
+			WindowDays:    dashboardWindowDays,
+			ChartMonths:   dashboardChartMonths,
 		}
-		grandSaleTotal := 0
-		for _, iso := range orderedDays {
-			ds := *daysMap[iso]
-			reportDays = append(reportDays, ds)
-			data.GrandCash += ds.CashRupees
-			data.GrandCard += ds.CardRupees
-			data.GrandTotal += ds.TotalRupees
-			data.GrandCount += ds.TxnCount
-			data.GrandReturn += ds.ReturnCount
-			grandSaleTotal += saleTotalByDay[iso]
+
+		// Every month gets a label, because twelve of them fit.
+		data.MonthChart = buildBarChart(monthValues, monthLabels, monthTips, 1,
+			func(n int) string { return "Rs. " + formatRupees(n) })
+
+		// Newest day first, so the reader sees today without scrolling. The
+		// customer chart wants the opposite order — time runs left to right —
+		// so it fills its slices from the far end of the same loop.
+		var grandSale, grandPurchase, grandReturn, grandSaleCount int
+		compare := make([]dayCompareRow, 0, dashboardWindowDays)
+		custValues := make([]int, dashboardWindowDays)
+		custLabels := make([]string, dashboardWindowDays)
+		custTips := make([]string, dashboardWindowDays)
+		for i := 0; i < dashboardWindowDays; i++ {
+			d := today.AddDate(0, 0, -i)
+			iso := d.Format("2006-01-02")
+			m := byDay[iso]
+			if m == nil {
+				m = &dayMoney{}
+			}
+			oldestFirst := dashboardWindowDays - 1 - i
+			custValues[oldestFirst] = m.saleCount
+			custLabels[oldestFirst] = d.Format("2 Jan")
+			custTips[oldestFirst] = d.Format("Mon 2 Jan")
+			display := d.Format("Mon 2 Jan")
+			switch i {
+			case 0:
+				display = "Today (" + display + ")"
+			case 1:
+				display = "Yesterday (" + display + ")"
+			}
+			compare = append(compare, dayCompareRow{
+				Display:    display,
+				IsToday:    i == 0,
+				SaleRs:     formatRupees(m.sale),
+				PurchaseRs: formatRupees(m.purchase),
+				ReturnRs:   formatRupees(m.ret),
+				NetRs:      formatRupees(m.sale - m.ret),
+			})
+			grandSale += m.sale
+			grandPurchase += m.purchase
+			grandReturn += m.ret
+			grandSaleCount += m.saleCount
 		}
-		data.ReportDays = reportDays
-		// today alone is noisy first thing in the morning, so the tile also
-		// shows the 7-day figure as a baseline to compare against
-		data.Week7BasketRs = avgBasketRupees(grandSaleTotal, data.GrandCount)
+		data.CompareDays = compare
+		data.GrandSaleRs = formatRupees(grandSale)
+		data.GrandPurchaseRs = formatRupees(grandPurchase)
+		data.GrandReturnRs = formatRupees(grandReturn)
+		data.GrandNetRs = formatRupees(grandSale - grandReturn)
+
+		// Today alone is noisy first thing in the morning, so the tile carries
+		// the window figure as a baseline. Both halves come from sale rows only
+		// (decision 23): grandSale already excludes returns, and grandSaleCount
+		// counts sale rows.
+		data.Window30Basket = avgBasketRupees(grandSale, grandSaleCount)
+
+		// Thirty labels do not fit under a 620-unit axis, so every fifth day
+		// is named. A sale count is a plain count, never a money total, so
+		// decision 19 does not apply to it — a refund is not a customer.
+		//
+		// strconv.Itoa, NOT formatRupees: this is a count, not money. The
+		// "Today's Transactions" tile renders the same number as a raw int, and
+		// the e2e test compares the two renderings. A thousands separator here
+		// would make the tooltip read "1,000 sales" beside a tile reading
+		// "1000" — a visible inconsistency, and a test that fails on the first
+		// day the store clears a thousand sales.
+		data.CustomerChart = buildBarChart(custValues, custLabels, custTips, 5,
+			func(n int) string { return strconv.Itoa(n) + " sales" })
 
 		if err := tmpl.ExecuteTemplate(w, "dashboard.html", data); err != nil {
 			log.Printf("render dashboard: %v", err)
@@ -2253,7 +2927,10 @@ func productsHandler(db *sql.DB, tmpl *template.Template) http.HandlerFunc {
 
 		var wheres []string
 		if lowOnly {
+			// A dead SKU is not a thing to reorder (decision 26). The dashboard
+			// tile that links here applies the same filter, so the two agree.
 			wheres = append(wheres, "p.stock < COALESCE(p.reorder_level, ?)")
+			wheres = append(wheres, soldRecentlySQL("p.id"))
 			args = append(args, lowStockThreshold)
 		}
 		if category != "" {
@@ -2288,7 +2965,11 @@ func productsHandler(db *sql.DB, tmpl *template.Template) http.HandlerFunc {
 		}
 
 		var lowCount int
-		if err := db.QueryRow("SELECT COUNT(*) FROM products WHERE stock < COALESCE(reorder_level, ?)", lowStockThreshold).Scan(&lowCount); err != nil {
+		if err := db.QueryRow(
+			`SELECT COUNT(*) FROM products p
+			  WHERE p.stock < COALESCE(p.reorder_level, ?)
+			    AND `+soldRecentlySQL("p.id"), lowStockThreshold,
+		).Scan(&lowCount); err != nil {
 			log.Printf("count low stock: %v", err)
 
 		}
@@ -3119,6 +3800,9 @@ type returnSubmitRequest struct {
 	OriginalTransactionID int                `json:"original_transaction_id"`
 	PaymentMethod         string             `json:"payment_method"`
 	Lines                 []returnSubmitLine `json:"lines"`
+	// The till paying the money out, which is NOT always the till that made the
+	// sale. Record where the cash left, not where it came in (decision 25).
+	Station string `json:"station"`
 }
 
 // returnSubmitHandler writes the refund. Mirrors checkoutHandler: one SQL
@@ -3269,9 +3953,9 @@ func returnSubmitHandler(db *sql.DB) http.HandlerFunc {
 		}
 
 		res, err := tx.ExecContext(ctx,
-			`INSERT INTO transactions (total_rupees, payment_method, kind, original_transaction_id)
-			 VALUES (?, ?, 'return', ?)`,
-			-total, req.PaymentMethod, req.OriginalTransactionID,
+			`INSERT INTO transactions (total_rupees, payment_method, kind, original_transaction_id, station)
+			 VALUES (?, ?, 'return', ?, ?)`,
+			-total, req.PaymentMethod, req.OriginalTransactionID, stationValue(req.Station),
 		)
 		if err != nil {
 			log.Printf("insert return transaction: %v", err)

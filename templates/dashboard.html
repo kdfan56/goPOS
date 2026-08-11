@@ -13,7 +13,7 @@
     color: #16191f;
     font-family: "Amazon Ember", "Helvetica Neue", Roboto, Arial, sans-serif;
   }
-  .gp-content { max-width: 1100px; margin: 0 auto; padding: 1.5rem 1rem; }
+  .gp-content { max-width: 1500px; margin: 0 auto; padding: 1.5rem 1rem; }
   h1 { margin: 0 0 1.25rem; font-size: 1.5rem; font-weight: 700; }
 
   /* ── Summary tiles ── */
@@ -29,13 +29,16 @@
   .tile .sub-link { display: block; margin-top: 0.4rem; font-size: 0.8rem; color: #0972d3; text-decoration: none; }
   .tile .sub-link:hover { text-decoration: underline; }
 
-  /* ── Two-column panel row ── */
+  /* ── Panel grid ──
+     auto-fit + minmax means the browser decides the column count from the
+     width. Three columns on a desk monitor, one on a phone, no media query. */
   .panels {
     display: grid;
-    grid-template-columns: 1fr 1fr;
+    grid-template-columns: repeat(auto-fit, minmax(380px, 1fr));
     gap: 1rem;
+    align-items: start;
   }
-  @media (max-width: 720px) { .panels { grid-template-columns: 1fr; } }
+  .panels.full { grid-template-columns: 1fr; margin-top: 1rem; }
 
   .panel { background: #fff; border: 1px solid #d5dbdb; }
   .panel-header {
@@ -47,11 +50,21 @@
   .panel-header a { font-size: 0.8rem; color: #0972d3; text-decoration: none; }
   .panel-header a:hover { text-decoration: underline; }
 
+  /* A long panel scrolls inside itself, the way the iPOS grids do, so one
+     long table cannot push every other panel off the screen. */
+  .scroll { max-height: 340px; overflow-y: auto; }
+
   table { width: 100%; border-collapse: collapse; }
-  th, td { padding: 0.6rem 1rem; text-align: left; border-bottom: 1px solid #e9ebed; font-size: 0.875rem; }
-  th { background: #fafafa; color: #414d5c; font-weight: 700; border-bottom: 1px solid #d5dbdb; }
+  th, td { padding: 0.5rem 1rem; text-align: left; border-bottom: 1px solid #e9ebed; font-size: 0.85rem; }
+  th {
+    background: #fafafa; color: #414d5c; font-weight: 700;
+    border-bottom: 1px solid #d5dbdb;
+    position: sticky; top: 0; z-index: 1;
+  }
   td.right, th.right { text-align: right; font-variant-numeric: tabular-nums; }
   tr:last-child td { border-bottom: none; }
+  td a { color: #0972d3; text-decoration: none; }
+  td a:hover { text-decoration: underline; }
 
   tr.today-row { background: #f0f7ff; }
   tr.today-row td:first-child { font-weight: 700; }
@@ -60,9 +73,25 @@
     font-size: 0.68rem; font-weight: 700; margin-left: 0.35rem;
     vertical-align: middle; letter-spacing: 0.4px;
   }
-  tfoot td { background: #fafafa; font-weight: 700; border-top: 2px solid #d5dbdb; border-bottom: none; }
+  tfoot td { background: #fafafa; font-weight: 700; border-top: 2px solid #d5dbdb; border-bottom: none;
+             position: sticky; bottom: 0; }
   .zero { color: #aab7b8; }
-  .empty { color: #5f6b7a; padding: 1rem; }
+  .empty { color: #5f6b7a; padding: 1rem; margin: 0; font-size: 0.875rem; }
+  .neg { color: #d91515; }
+  .note { font-size: 0.75rem; color: #5f6b7a; padding: 0.5rem 1rem; margin: 0; border-top: 1px solid #e9ebed; }
+
+  /* ── Charts ──
+     A chart needs more width than a table to stay readable, so the chart row
+     asks for a wider minimum. Same auto-fit rule, different minimum. */
+  .panels.charts { grid-template-columns: repeat(auto-fit, minmax(520px, 1fr)); margin-bottom: 1rem; }
+  .chart { display: block; width: 100%; height: auto; padding: 0.5rem 0.25rem 0; }
+  .chart .bar { fill: #5c8ab8; }
+  .chart .bar:hover { fill: #16191f; }
+  .chart .bar.new { fill: #ec7211; }
+  .chart .grid { stroke: #d5dbdb; stroke-width: 1; }
+  .chart .grid.faint { stroke: #e9ebed; stroke-dasharray: 3 3; }
+  .chart .axis-value { fill: #5f6b7a; font-size: 9px; text-anchor: end; }
+  .chart .axis-label { fill: #5f6b7a; font-size: 10px; text-anchor: middle; }
 </style>
 </head>
 <body>
@@ -83,11 +112,12 @@
     <div class="tile">
       <div class="label">Avg Basket</div>
       <div class="value">Rs. {{.TodayBasketRs}}</div>
-      <div class="subline">7-day avg: Rs. {{.Week7BasketRs}}</div>
+      <div class="subline">{{.WindowDays}}-day avg: Rs. {{.Window30Basket}}</div>
     </div>
     <div class="tile">
       <div class="label">{{.MonthLabel}} Sale</div>
       <div class="value">Rs. {{.MonthSalesRs}}</div>
+      <div class="subline">{{.MonthCount}} sales · avg basket Rs. {{.MonthBasket}}</div>
     </div>
     <div class="tile">
       <div class="label">Low Stock Items</div>
@@ -96,72 +126,271 @@
     </div>
   </div>
 
+  <div class="panels charts">
+
+    <div class="panel">
+      <div class="panel-header">
+        <h2>Monthly sale — last {{.ChartMonths}} months</h2>
+        <a href="/reports">Sales report →</a>
+      </div>
+      {{template "barChart" .MonthChart}}
+      <p class="note">Each bar nets that month's refunds. Hover a bar for the exact figure. The current month is still filling up.</p>
+    </div>
+
+    <div class="panel">
+      <div class="panel-header">
+        <h2>No. of customers — last {{.WindowDays}} days</h2>
+      </div>
+      {{template "barChart" .CustomerChart}}
+      <p class="note">One customer is one completed sale. A refund is not a customer, so refunds are not counted here.</p>
+    </div>
+
+  </div>
+
   <div class="panels">
 
     <div class="panel">
       <div class="panel-header">
-        <h2>Top sellers — last 7 days</h2>
+        <h2>Today's Sale — by till</h2>
       </div>
-      {{if .TopItems}}
+      {{if .Stations}}
       <table>
         <thead>
           <tr>
-            <th>Item</th>
-            <th class="right">Qty</th>
-            <th class="right">Revenue (Rs.)</th>
+            <th>Till</th>
+            <th class="right">Sales</th>
+            <th class="right">Total (Rs.)</th>
+            <th class="right">Avg Basket</th>
           </tr>
         </thead>
         <tbody>
-          {{range .TopItems}}
+          {{range .Stations}}
           <tr>
-            <td><a href="/reports/product/{{.ProductID}}" style="color:#0972d3;text-decoration:none;">{{.Name}}</a></td>
-            <td class="right">{{.Qty}}</td>
-            <td class="right">{{.RevenueRs}}</td>
+            <td>{{.Station}}</td>
+            <td class="right">{{.Count}}</td>
+            <td class="right">{{.SalesRs}}</td>
+            <td class="right">{{.BasketRs}}</td>
           </tr>
           {{end}}
         </tbody>
       </table>
+      <p class="note">A till appears here once it is opened with <code>/pos?station=1</code>. "Not set" means the terminal was never given a number.</p>
       {{else}}
-      <p class="empty">No sales in the last 7 days yet.</p>
+      <p class="empty">No sales yet today.</p>
       {{end}}
     </div>
 
     <div class="panel">
       <div class="panel-header">
-        <h2>Sales — last 7 days</h2>
-        <a href="/reports">Full report →</a>
+        <h2>Today's Refunds</h2>
+        <a href="/pos/return">Return screen →</a>
       </div>
+      {{if .Refunds}}
+      <div class="scroll">
+        <table>
+          <thead>
+            <tr>
+              <th>Time</th>
+              <th>Receipt</th>
+              <th>Item</th>
+              <th class="right">Qty</th>
+              <th class="right">Refund (Rs.)</th>
+            </tr>
+          </thead>
+          <tbody>
+            {{range .Refunds}}
+            <tr>
+              <td>{{.Time}}</td>
+              <td><a href="/receipt/{{.TransactionID}}">#{{.TransactionID}}</a></td>
+              <td>{{.Name}}</td>
+              <td class="right">{{.Qty}}</td>
+              <td class="right neg">{{.TotalRs}}</td>
+            </tr>
+            {{end}}
+          </tbody>
+        </table>
+      </div>
+      <p class="note">The 20 most recent refund lines. Use the return screen or the sales report for a full day.</p>
+      {{else}}
+      <p class="empty">No refunds today.</p>
+      {{end}}
+    </div>
+
+    <div class="panel">
+      <div class="panel-header">
+        <h2>Payment method — last {{.WindowDays}} days</h2>
+      </div>
+      {{if .Methods}}
       <table>
         <thead>
           <tr>
-            <th>Day</th>
-            <th class="right">Cash</th>
-            <th class="right">Card</th>
-            <th class="right">Total</th>
+            <th>Method</th>
+            <th class="right">Total (Rs.)</th>
+            <th class="right">Share</th>
           </tr>
         </thead>
         <tbody>
-          {{range .ReportDays}}
-          <tr{{if .IsToday}} class="today-row"{{end}}>
-            <td>{{.Display}}{{if .IsToday}}<span class="today-badge">TODAY</span>{{end}}</td>
-            <td class="right {{if not .CashRupees}}zero{{end}}">{{.CashRupees}}</td>
-            <td class="right {{if not .CardRupees}}zero{{end}}">{{.CardRupees}}</td>
-            <td class="right {{if not .TotalRupees}}zero{{end}}">{{.TotalRupees}}</td>
+          {{range .Methods}}
+          <tr>
+            <td>{{.Name}}</td>
+            <td class="right">{{.TotalRs}}</td>
+            <td class="right">{{.Percent}}</td>
           </tr>
           {{end}}
         </tbody>
-        <tfoot>
-          <tr>
-            <td>7-day total</td>
-            <td class="right">{{.GrandCash}}</td>
-            <td class="right">{{.GrandCard}}</td>
-            <td class="right">{{.GrandTotal}}</td>
-          </tr>
-        </tfoot>
       </table>
+      <p class="note">Card totals are what to reconcile against the physical card terminal.</p>
+      {{else}}
+      <p class="empty">No sales in the last {{.WindowDays}} days.</p>
+      {{end}}
+    </div>
+
+    <div class="panel">
+      <div class="panel-header">
+        <h2>Top selling items — last {{.WindowDays}} days</h2>
+        <a href="/reports/itemwise">Itemwise report →</a>
+      </div>
+      {{if .TopItems}}
+      <div class="scroll">
+        <table>
+          <thead>
+            <tr>
+              <th>Item</th>
+              <th class="right">Qty</th>
+              <th class="right">Revenue (Rs.)</th>
+            </tr>
+          </thead>
+          <tbody>
+            {{range .TopItems}}
+            <tr>
+              <td><a href="/reports/product/{{.ProductID}}">{{.Name}}</a></td>
+              <td class="right">{{.Qty}}</td>
+              <td class="right">{{.RevenueRs}}</td>
+            </tr>
+            {{end}}
+          </tbody>
+        </table>
+      </div>
+      {{else}}
+      <p class="empty">No sales in the last {{.WindowDays}} days.</p>
+      {{end}}
+    </div>
+
+    <div class="panel">
+      <div class="panel-header">
+        <h2>Category contribution — last {{.WindowDays}} days</h2>
+        <a href="/reports/categories">Full report →</a>
+      </div>
+      {{if .Categories}}
+      <div class="scroll">
+        <table>
+          <thead>
+            <tr>
+              <th>Category</th>
+              <th class="right">Total (Rs.)</th>
+              <th class="right">Share</th>
+            </tr>
+          </thead>
+          <tbody>
+            {{range .Categories}}
+            <tr>
+              <td>{{.Name}}</td>
+              <td class="right">{{.TotalRs}}</td>
+              <td class="right">{{.Percent}}</td>
+            </tr>
+            {{end}}
+          </tbody>
+        </table>
+      </div>
+      <p class="note">The 15 largest categories. Each share is of the whole {{.WindowDays}}-day window, so these rows add up to less than 100%.</p>
+      {{else}}
+      <p class="empty">No sales in the last {{.WindowDays}} days.</p>
+      {{end}}
+    </div>
+
+    <div class="panel">
+      <div class="panel-header">
+        <h2>Sale vs purchase — last {{.WindowDays}} days</h2>
+        <a href="/reports">Sales report →</a>
+      </div>
+      <div class="scroll">
+        <table>
+          <thead>
+            <tr>
+              <th>Day</th>
+              <th class="right">Sale</th>
+              <th class="right">Purchase</th>
+              <th class="right">Refunds</th>
+              <th class="right">Net</th>
+            </tr>
+          </thead>
+          <tbody>
+            {{range .CompareDays}}
+            <tr{{if .IsToday}} class="today-row"{{end}}>
+              <td>{{.Display}}{{if .IsToday}}<span class="today-badge">TODAY</span>{{end}}</td>
+              <td class="right">{{.SaleRs}}</td>
+              <td class="right">{{.PurchaseRs}}</td>
+              <td class="right {{if eq .ReturnRs "0"}}zero{{else}}neg{{end}}">{{.ReturnRs}}</td>
+              <td class="right">{{.NetRs}}</td>
+            </tr>
+            {{end}}
+          </tbody>
+          <tfoot>
+            <tr>
+              <td>{{.WindowDays}}-day total</td>
+              <td class="right">{{.GrandSaleRs}}</td>
+              <td class="right">{{.GrandPurchaseRs}}</td>
+              <td class="right">{{.GrandReturnRs}}</td>
+              <td class="right">{{.GrandNetRs}}</td>
+            </tr>
+          </tfoot>
+        </table>
+      </div>
+      <p class="note">Sale is gross. Net is sale minus refunds. Purchase uses each product's current cost price, so an old day moves if you edit a cost.</p>
     </div>
 
   </div>
+
+  <div class="panels full">
+    <div class="panel">
+      <div class="panel-header">
+        <h2>Reorder level</h2>
+        <a href="/products?low=1">Full reorder list ({{.LowStockCount}}) →</a>
+      </div>
+      {{if .ReorderItems}}
+      <table>
+        <thead>
+          <tr>
+            <th>Item code</th>
+            <th>Description</th>
+            <th class="right">On hand</th>
+            <th class="right">ROL</th>
+            <th class="right">RO qty</th>
+            <th class="right">Sale price</th>
+            <th>Supplier</th>
+          </tr>
+        </thead>
+        <tbody>
+          {{range .ReorderItems}}
+          <tr>
+            <td>{{.Barcode}}</td>
+            <td><a href="/products/{{.ID}}/edit">{{.Name}}</a></td>
+            <td class="right {{if le .Stock 0}}neg{{end}}">{{.Stock}}</td>
+            <td class="right">{{.Threshold}}</td>
+            <td class="right">{{if .ReorderQty.Valid}}{{.ReorderQty.Int64}}{{else}}—{{end}}</td>
+            <td class="right">{{.PriceRupees}}</td>
+            <td>{{if .SupplierName}}{{.SupplierName}}{{else}}<span class="zero">Unassigned</span>{{end}}</td>
+          </tr>
+          {{end}}
+        </tbody>
+      </table>
+      <p class="note">The {{len .ReorderItems}} most urgent items, furthest below their own reorder level. A product with no sale in the last 90 days is left out.</p>
+      {{else}}
+      <p class="empty">Nothing needs reordering.</p>
+      {{end}}
+    </div>
+  </div>
+
 </div>
 </body>
 </html>

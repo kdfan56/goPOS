@@ -203,6 +203,7 @@ async function checkout(method) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         payment_method: method,
+        station: window.gpStation || '',
         items: cart.map(line => ({ product_id: line.id, quantity: line.qty })),
       }),
     });

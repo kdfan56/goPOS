@@ -24,6 +24,19 @@ export default async function teardown(): Promise<void> {
     fs.unlinkSync(PID_FILE);
   }
 
+  // The marker is written by global-setup, and ONLY after setup has decided
+  // what the file at DB_PATH is. Its presence is the proof that any pos.db
+  // sitting there now is a throwaway that setup created.
+  //
+  // WARNING: without this check, a setup that fails early — a busy port, a
+  // build error — leaves the marker unwritten while teardown still runs, and
+  // the delete below would eat the real development database. That happened.
+  // Playwright runs the teardown even when the setup throws.
+  if (!fs.existsSync(BACKUP_MARKER)) {
+    log('No backup marker — setup did not get far enough. Leaving pos.db alone.');
+    return;
+  }
+
   // Remove the test database
   if (fs.existsSync(DB_PATH)) {
     fs.unlinkSync(DB_PATH);
@@ -31,12 +44,10 @@ export default async function teardown(): Promise<void> {
   }
 
   // Restore the original database if we backed one up
-  if (fs.existsSync(BACKUP_MARKER)) {
-    const backedUp = fs.readFileSync(BACKUP_MARKER, 'utf8').trim();
-    if (backedUp === '1' && fs.existsSync(DB_BACKUP)) {
-      fs.renameSync(DB_BACKUP, DB_PATH);
-      log('Restored pos.db from backup');
-    }
-    fs.unlinkSync(BACKUP_MARKER);
+  const backedUp = fs.readFileSync(BACKUP_MARKER, 'utf8').trim();
+  if (backedUp === '1' && fs.existsSync(DB_BACKUP)) {
+    fs.renameSync(DB_BACKUP, DB_PATH);
+    log('Restored pos.db from backup');
   }
+  fs.unlinkSync(BACKUP_MARKER);
 }

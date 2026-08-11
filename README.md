@@ -5,9 +5,6 @@ built to replace an ageing iPOS.net / SQL Server setup. Single Go binary, SQLite
 server-rendered HTML — three in-store terminals run it in a browser over the shop's
 local WiFi, all hitting one server on the store PC.
 
-Built to be run by a shopkeeper, not operated by a devops team: no external
-services, no build pipeline, one file to launch.
-
 ## Stack
 
 - **Backend:** Go, standard library only (`net/http` with `http.ServeMux`, `html/template`) — no web framework.
@@ -48,18 +45,3 @@ openssl req -x509 -newkey rsa:2048 -nodes -keyout key.pem -out cert.pem \
 The server listens on `:8443` over TLS. Templates are parsed once at startup, so
 restart after editing any `.html`. The database is `pos.db` (gitignored); delete it
 and restart to reset — the seed re-runs.
-
-## Layout
-
-- `main.go` — server, routing, auth, all handlers.
-- `schema.sql` — full database schema.
-- `templates/` — one HTML template per page.
-- `cmd/import/` — one-off importer for migrating products from the old iPOS export.
-- `tests/e2e/` — Playwright suite covering auth, the POS flow, returns, and page smoke tests.
-
-## Design note
-
-Built deliberately simple — standard library over frameworks, raw SQL over an ORM,
-one process over microservices. SQLite's single-writer lock is fine for three
-terminals at grocery-store volume. Decisions were recorded as they were made; the
-rationale trail is kept out of the published repo.

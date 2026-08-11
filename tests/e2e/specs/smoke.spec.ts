@@ -8,7 +8,77 @@ test.describe('Smoke tests — key pages load correctly', () => {
     await page.goto('/');
     await expect(page.locator('.tile')).toHaveCount(5);
     await expect(page.locator('.tile .label')).toContainText(['Today\'s Sale', 'Transactions', 'Avg Basket', 'Low Stock']);
-    await expect(page.locator('.panel')).toHaveCount(2);
+  });
+
+  // The parity dashboard (decision 24). The count alone would pass after a
+  // rename, so every panel is also pinned by its heading. Adding a panel is
+  // meant to fail here: update both lists in the same edit.
+  test('dashboard shows every parity panel', async ({ page }) => {
+    await page.goto('/');
+    await expect(page.locator('.panel')).toHaveCount(9);
+    for (const heading of [
+      'Monthly sale',
+      'No. of customers',
+      "Today's Sale — by till",
+      "Today's Refunds",
+      'Payment method',
+      'Top selling items',
+      'Category contribution',
+      'Sale vs purchase',
+      'Reorder level',
+    ]) {
+      await expect(page.locator('.panel-header h2', { hasText: heading })).toHaveCount(1);
+    }
+  });
+
+  // The charts are inline SVG built in Go (decision 24), so there is no chart
+  // library to trust and the geometry is ours to get wrong. These two tests tie
+  // each chart to a number that is already proven elsewhere on the same page,
+  // so a broken query or a broken layout cannot pass quietly.
+  test.describe('dashboard charts', () => {
+    // A sale of our own guarantees both charts have data, whatever order the
+    // parallel workers ran in. Without it, an empty chart renders a message
+    // instead of an <svg> and the assertions below would be a race.
+    test.beforeEach(async ({ page }) => {
+      await page.goto('/pos');
+      await page.locator('#barcode').fill('8964000123456');
+      await page.locator('#barcode').press('Enter');
+      await page.waitForTimeout(300);
+      const [receipt] = await Promise.all([
+        page.waitForEvent('popup', { timeout: 10000 }),
+        page.locator('#pay-cash').click(),
+      ]);
+      await receipt.close();
+    });
+
+    test('the customer chart agrees with the transactions tile', async ({ page }) => {
+      await page.goto('/');
+
+      // Both numbers are read from ONE page load, so another worker's sale
+      // landing between two reads cannot make them disagree.
+      const tile = await page.locator('.tile', { hasText: "Today's Transactions" })
+                             .locator('.value').textContent();
+      const newest = await page.locator('.panel', { hasText: 'No. of customers' })
+                               .locator('rect.bar.new title').textContent();
+
+      // The tile counts sale rows only (decision 21). The newest bar is today.
+      expect(newest).toContain(tile!.trim() + ' sales');
+    });
+
+    test('the monthly chart has one bar per month and the newest is this month', async ({ page }) => {
+      await page.goto('/');
+      const chart = page.locator('.panel', { hasText: 'Monthly sale' });
+      await expect(chart.locator('rect.bar')).toHaveCount(12);
+
+      // The expected month comes from the month tile, not from the test
+      // machine's clock. The server works in Asia/Karachi and the test runner
+      // may not, so a JS Date would flake for a few hours every month end.
+      const tileLabel = await page.locator('.tile .label', { hasText: /\d{4} Sale$/ }).textContent();
+      const thisMonth = tileLabel!.trim().replace(/ Sale$/, '');
+
+      const newest = await chart.locator('rect.bar.new title').textContent();
+      expect(newest).toContain(thisMonth);
+    });
   });
 
   test('products page lists seeded items', async ({ page }) => {

@@ -57,6 +57,42 @@
   <a href="/pos">POS</a>
   <a href="/price-check">Price Check</a>
   <a href="/pos/return">Return</a>
+  <span class="gp-station" id="gpStation"></span>
 </nav>
 {{template "navScript"}}
+{{template "stationScript"}}
+{{end}}
+
+{{define "stationScript"}}
+<style>
+  .gp-station { margin-left: auto; color: #8d99a8; font-size: 0.8rem; font-weight: 700; letter-spacing: 0.3px; }
+  .gp-station.set { color: #ff9900; }
+</style>
+<script>
+  // Station identity (decision 25). All three tills hit ONE server, so the
+  // server cannot tell them apart — the terminal has to say who it is.
+  //
+  // Set a till once by opening /pos?station=1 and bookmarking it. The value is
+  // remembered in localStorage and survives a browser restart. A terminal that
+  // was never given one sends nothing, and the column stays NULL.
+  //
+  // This is a reconciliation aid, NOT a security control: the value is
+  // self-reported and a cashier can change it.
+  window.gpStation = (function () {
+    var KEY = 'gopos.station';
+    var fromUrl = new URLSearchParams(window.location.search).get('station');
+    if (fromUrl !== null) {
+      var clean = fromUrl.trim().slice(0, 20);
+      if (clean) { localStorage.setItem(KEY, clean); }
+      else { localStorage.removeItem(KEY); }
+    }
+    var station = localStorage.getItem(KEY) || '';
+    var label = document.getElementById('gpStation');
+    if (label) {
+      label.textContent = station ? 'Till ' + station : 'Till not set';
+      if (station) label.classList.add('set');
+    }
+    return station;
+  })();
+</script>
 {{end}}

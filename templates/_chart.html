@@ -1,0 +1,20 @@
+{{define "barChart"}}
+{{if .Empty}}
+<p class="empty">Nothing to chart yet.</p>
+{{else}}
+<svg class="chart" viewBox="0 0 {{.Width}} {{.Height}}" preserveAspectRatio="xMidYMid meet" role="img">
+  <line class="grid faint" x1="{{.PadX}}" y1="{{.PeakY}}" x2="{{.RightX}}" y2="{{.PeakY}}"/>
+  <line class="grid faint" x1="{{.PadX}}" y1="{{.HalfY}}" x2="{{.RightX}}" y2="{{.HalfY}}"/>
+  <line class="grid"       x1="{{.PadX}}" y1="{{.BaseY}}" x2="{{.RightX}}" y2="{{.BaseY}}"/>
+
+  <text class="axis-value" x="{{.PadX}}" y="{{.PeakY}}" dx="-6" dy="3">{{.PeakText}}</text>
+  <text class="axis-value" x="{{.PadX}}" y="{{.HalfY}}" dx="-6" dy="3">{{.HalfText}}</text>
+  <text class="axis-value" x="{{.PadX}}" y="{{.BaseY}}" dx="-6" dy="3">0</text>
+
+  {{range .Bars}}
+  <rect class="bar{{if .Highlight}} new{{end}}" x="{{.X}}" y="{{.Y}}" width="{{.W}}" height="{{.H}}"><title>{{.Tip}}</title></rect>
+  {{if .Label}}<text class="axis-label" x="{{.MidX}}" y="{{$.LabelY}}">{{.Label}}</text>{{end}}
+  {{end}}
+</svg>
+{{end}}
+{{end}}

@@ -233,6 +233,7 @@
       body: JSON.stringify({
         original_transaction_id: currentSale.transaction_id,
         payment_method: payMethod.value,
+        station: window.gpStation || '',
         lines: picked.lines
       })
     });
